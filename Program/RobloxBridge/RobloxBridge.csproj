@@ -1,10 +1,21 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <OutputType>Exe</OutputType>
+        <Version>0.0.1</Version>
         <TargetFramework>net8.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+        <Platforms>AnyCPU</Platforms>
     </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\..\WoowzLib\WoowzLib\WoowzLib.Window.GLFW\WoowzLib.Window.GLFW.csproj" />
+        <ProjectReference Include="..\..\..\WoowzLib\WoowzLib\WoowzLib.Web.WebView2\WoowzLib.Web.WebView2.csproj" />
+    </ItemGroup>
+
+    <Target Name="PreBuild" BeforeTargets="PreBuildEvent">
+        <Exec Command="&quot;W:\Other\WoowzLib\CSVersionUpdater\bin\Debug\net8.0\CSVersionUpdater.exe&quot; &quot;$(MSBuildProjectFullPath)&quot;" />
+    </Target>
 
 </Project>
