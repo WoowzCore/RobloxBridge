@@ -1,5 +1,6 @@
 ﻿using System.Collections.Concurrent;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using WLO;
@@ -19,13 +20,15 @@ public static class Bootstrap{
     private static volatile bool            __IsRunning   = false;
     private static volatile int             __CurrentPort = 4949;
 
-    private static volatile PlaceInfo? __CreateRequest = null; // запрос на создание проекта от плагина
-    private static volatile bool       __DialogOpen    = false;
+    private static volatile bool __Creating   = false; // плагин попросил создать проект, ждём выбор папки
+    private static volatile bool __DialogOpen = false;
 
     private static volatile string? __PendingTitle = null;
 
     private static DateTime __LastPingTime        = DateTime.MinValue;
     private static DateTime __LastPingBadgeUpdate = DateTime.MinValue;
+
+    private static readonly JsonSerializerOptions __JsonIn = new(){ PropertyNameCaseInsensitive = true };
 
     [STAThread]
     public static int Main(string[] Args){
@@ -33,6 +36,7 @@ public static class Bootstrap{
             WL.Core.Start(Args);
 
             Settings.Load();
+            Project.Log   = __EnqueueLog;
             __CurrentPort = Settings.Port;
 
             WebView = WLO.Web.WebView2.Create();
@@ -184,20 +188,20 @@ public static class Bootstrap{
         }
     }
 
-    /// Плагин просит создать проект: спрашиваем папку и создаём bridge.json.
+    /// Плагин просит создать проект для игры: спрашиваем папку и создаём bridge.json.
     private static void __BeginCreate(PlaceInfo Info){
-        if(__CreateRequest != null || __DialogOpen){ return; }
+        if(__Creating || __DialogOpen){ return; }
 
-        __CreateRequest = Info;
+        __Creating = true;
         __SendProject();
-        __EnqueueLog($"Плагин просит создать проект для плейса «{Info.PlaceName}» (PlaceId {Info.PlaceId}). Выберите папку.", "Info");
+        __EnqueueLog($"Плагин просит создать проект для игры {Info.UniverseId}. Выберите папку.", "Info");
 
         __PickFolder("Выберите папку для нового проекта (можно создать новую)", Folder => {
-            __CreateRequest = null;
+            __Creating = false;
 
             if(Folder == null){
                 __EnqueueLog("Создание проекта отменено.", "Info");
-            }else if(Project.TryCreate(Folder, Info, out string Error)){
+            }else if(Project.TryCreate(Folder, Info.UniverseId, out string Error)){
                 Settings.LastProject = Project.Current!.Dir;
                 __EnqueueLog($"Проект создан: {Project.Current.Data.Name} ({Project.Current.Dir})", "Info");
             }else{
@@ -295,7 +299,7 @@ public static class Bootstrap{
             __EnqueueLog($"Ошибка при обработке запроса: {e.Message}", "Error");
 
             Code = 500;
-            Body = JsonSerializer.Serialize(new{ error = e.Message });
+            Body = __Err(e.Message);
         }
 
         try{
@@ -311,6 +315,13 @@ public static class Bootstrap{
         }
     }
 
+    private static string __Err(string Message) => JsonSerializer.Serialize(new{ error = Message });
+
+    private static PlaceInfo? __ReadInfo(HttpListenerRequest Request){
+        using StreamReader Reader = new(Request.InputStream, Encoding.UTF8);
+        return JsonSerializer.Deserialize<PlaceInfo>(Reader.ReadToEnd(), __JsonIn);
+    }
+
     private static (int Code, string Body) __Route(HttpListenerRequest Request){
         string Route = Request.Url?.AbsolutePath ?? "";
 
@@ -318,14 +329,22 @@ public static class Bootstrap{
         if(Route == "/ping"){
             __LastPingTime = DateTime.Now;
 
+            // Подхватываем ручные правки bridge.json (например, переименование папки плейса)
+            if(Project.Refresh()){ __SendProject(); }
+
             long.TryParse(Request.QueryString["place"],    out long PlaceId);
             long.TryParse(Request.QueryString["universe"], out long UniverseId);
 
+            ProjectHandle? P      = Project.Current;
+            string?        Folder = null;
+            P?.Data.Places.TryGetValue(PlaceId.ToString(), out Folder);
+
             return (200, JsonSerializer.Serialize(new{
                 status   = "ok",
-                project  = Project.Current?.Data.Name,
-                creating = __CreateRequest != null,
-                place    = Project.IsOpen ? Project.CheckPlace(PlaceId, UniverseId) : null
+                project  = P?.Data.Name,
+                creating = __Creating,
+                place    = Project.CheckPlace(PlaceId, UniverseId),
+                folder   = Folder
             }));
         }
 
@@ -333,31 +352,35 @@ public static class Bootstrap{
 
         switch(Route){
             case "/project/create":{
-                if(Request.HttpMethod != "POST"){
-                    return (405, """{"error":"Нужен POST"}""");
-                }
+                if(Request.HttpMethod != "POST"){ return (405, __Err("Нужен POST")); }
+                if(Project.IsOpen){               return (409, __Err("Проект уже открыт")); }
 
-                if(Project.IsOpen){
-                    return (409, """{"error":"Проект уже открыт"}""");
-                }
-
-                using StreamReader Reader = new(Request.InputStream, Encoding.UTF8);
-
-                PlaceInfo? Info = JsonSerializer.Deserialize<PlaceInfo>(
-                    Reader.ReadToEnd(),
-                    new JsonSerializerOptions{ PropertyNameCaseInsensitive = true }
-                );
-
-                if(Info == null){
-                    return (400, """{"error":"Пустой запрос"}""");
+                PlaceInfo? Info = __ReadInfo(Request);
+                if(Info == null || Info.UniverseId == 0){
+                    return (400, __Err("Плейс не опубликован в Roblox"));
                 }
 
                 __BeginCreate(Info);
                 return (200, """{"status":"waiting"}""");
             }
 
+            case "/place/add":{
+                if(Request.HttpMethod != "POST"){ return (405, __Err("Нужен POST")); }
+
+                PlaceInfo? Info = __ReadInfo(Request);
+                if(Info == null){ return (400, __Err("Пустой запрос")); }
+
+                if(!Project.TryAddPlace(Info, out string Error)){
+                    __EnqueueLog($"Не удалось добавить плейс: {Error}", "Error");
+                    return (409, __Err(Error));
+                }
+
+                __SendProject();
+                return (200, """{"status":"ok"}""");
+            }
+
             default:
-                return (404, """{"error":"Not Found"}""");
+                return (404, __Err("Not Found"));
         }
     }
 
@@ -376,10 +399,12 @@ public static class Bootstrap{
         ProjectHandle? P = Project.Current;
 
         __Post("ProjectState", new{
-            Open     = P != null,
-            Name     = P?.Data.Name,
-            Path     = P?.Dir,
-            Creating = __CreateRequest != null
+            Open       = P != null,
+            Name       = P?.Data.Name,
+            Path       = P?.Dir,
+            UniverseId = P?.Data.UniverseId ?? 0,
+            Places     = P?.Data.Places ?? new Dictionary<string, string>(),
+            Creating   = __Creating
         });
     }
 
@@ -415,4 +440,443 @@ public static class Bootstrap{
 
         __Post("PingUpdate", new{ Seconds });
     }
+}
+
+// ==========================================================================
+// Настройки приложения (порт и последний проект, на каждом ПК свои)
+
+public static class Settings{
+    private sealed class Data{
+        public int     Port        { get; set; } = 4949;
+        public string? LastProject { get; set; }
+    }
+
+    private static readonly string __File = Path.Combine(AppContext.BaseDirectory, "robloxbridge.settings.json");
+    private static Data __Data = new();
+
+    public static int Port{
+        get => __Data.Port;
+        set{ __Data.Port = value; __Save(); }
+    }
+
+    public static string? LastProject{
+        get => __Data.LastProject;
+        set{ __Data.LastProject = value; __Save(); }
+    }
+
+    public static void Load(){
+        try{
+            if(!File.Exists(__File)){ return; }
+
+            Data? Loaded = JsonSerializer.Deserialize<Data>(File.ReadAllText(__File));
+            if(Loaded == null){ return; }
+
+            if(Loaded.Port is < 1 or > 65535){ Loaded.Port = 4949; }
+            __Data = Loaded;
+        }catch(Exception e){
+            WL.Logger.Warn("Не удалось загрузить настройки.", e);
+        }
+    }
+
+    private static void __Save(){
+        try{
+            File.WriteAllText(__File, JsonSerializer.Serialize(__Data, new JsonSerializerOptions{ WriteIndented = true }));
+        }catch(Exception e){
+            WL.Logger.Warn("Не удалось сохранить настройки.", e);
+        }
+    }
+}
+
+// ==========================================================================
+// Проект: bridge.json (игра) + Places/<папка>/place.json (плейсы)
+
+public sealed record PlaceInfo(long PlaceId, long UniverseId);
+
+public sealed class ProjectData{
+    public int    Format     { get; set; } = Project.FormatVersion;
+    public string Name       { get; set; } = "";
+    public long   UniverseId { get; set; }
+
+    /// PlaceId (строкой) -> имя папки внутри Places/. Имя можно менять руками.
+    public Dictionary<string, string> Places { get; set; } = [];
+}
+
+public sealed class PlaceData{
+    public long   PlaceId { get; set; }
+    public string Created { get; set; } = "";
+}
+
+public sealed record ProjectHandle(string Dir, ProjectData Data);
+
+public static class Project{
+    public const string MarkerFile    = "bridge.json";
+    public const string PlaceFile     = "place.json";
+    public const string PlacesDir     = "Places";
+    public const int    FormatVersion = 1;
+
+    public static Action<string, string> Log = (_, _) => {};
+
+    public static volatile ProjectHandle? Current = null;
+    public static bool IsOpen => Current != null;
+
+    private static readonly object __Lock = new();
+    private static DateTime        __Stamp;
+
+    private static readonly JsonSerializerOptions __Json = new(){ WriteIndented = true, PropertyNameCaseInsensitive = true };
+
+    // ----------------------------------------------------------------------
+
+    public static bool TryOpen(string Folder, out string Error){
+        Error = "";
+
+        lock(__Lock){
+            try{
+                string Full = Path.GetFullPath(Folder);
+
+                if(!File.Exists(Path.Combine(Full, MarkerFile))){
+                    Error = $"В папке нет {MarkerFile}, это не проект RobloxBridge.\nНовый проект создаётся из плагина в Roblox Studio.";
+                    return false;
+                }
+
+                ProjectData Data = __Read(Full);
+
+                Current = new ProjectHandle(Full, Data);
+                __Stamp = File.GetLastWriteTimeUtc(Path.Combine(Full, MarkerFile));
+
+                __Sync(Current);
+                return true;
+            }catch(Exception e){
+                Error = $"Не удалось прочитать проект: {e.Message}";
+                return false;
+            }
+        }
+    }
+
+    public static bool TryCreate(string Folder, long UniverseId, out string Error){
+        Error = "";
+
+        lock(__Lock){
+            try{
+                string Full = Path.GetFullPath(Folder);
+
+                if(!Directory.Exists(Full)){
+                    Error = "Папка не существует.";
+                    return false;
+                }
+
+                if(File.Exists(Path.Combine(Full, MarkerFile))){
+                    Error = "В этой папке уже есть проект RobloxBridge.\nОткройте его кнопкой «Открыть проект» в приложении.";
+                    return false;
+                }
+
+                ProjectData Data = new(){ Name = new DirectoryInfo(Full).Name, UniverseId = UniverseId };
+
+                __Write(Full, Data);
+                Current = new ProjectHandle(Full, Data);
+
+                return true;
+            }catch(Exception e){
+                Error = $"Не удалось создать проект: {e.Message}";
+                return false;
+            }
+        }
+    }
+
+    public static bool TryAddPlace(PlaceInfo Info, out string Error){
+        Error = "";
+
+        lock(__Lock){
+            ProjectHandle? H = Current;
+
+            if(H == null){                                  Error = "Проект не открыт.";                    return false; }
+            if(Info.PlaceId == 0){                          Error = "Плейс не опубликован в Roblox.";       return false; }
+            if(Info.UniverseId != H.Data.UniverseId){       Error = "Этот плейс относится к другой игре.";  return false; }
+
+            string Id = Info.PlaceId.ToString();
+
+            if(H.Data.Places.ContainsKey(Id)){              Error = "Плейс уже добавлен в проект.";         return false; }
+
+            try{
+                ProjectData New = new(){
+                    Format     = H.Data.Format,
+                    Name       = H.Data.Name,
+                    UniverseId = H.Data.UniverseId,
+                    Places     = new Dictionary<string, string>(H.Data.Places){ [Id] = Id }
+                };
+
+                __Write(H.Dir, New);
+                Current = new ProjectHandle(H.Dir, New);
+
+                __Sync(Current);
+                Log($"Плейс {Id} добавлен: {PlacesDir}/{Id}", "Info");
+
+                return true;
+            }catch(Exception e){
+                Error = $"Не удалось добавить плейс: {e.Message}";
+                return false;
+            }
+        }
+    }
+
+    public static void Close(){
+        Current = null;
+    }
+
+    /// Если bridge.json правили руками, перечитывает его и приводит папки в соответствие. true, если что-то изменилось.
+    public static bool Refresh(){
+        lock(__Lock){
+            ProjectHandle? H = Current;
+            if(H == null){ return false; }
+
+            string Marker = Path.Combine(H.Dir, MarkerFile);
+            DateTime Stamp = File.GetLastWriteTimeUtc(Marker);
+
+            if(Stamp == __Stamp){ return false; }
+            __Stamp = Stamp; // ошибка чтения будет показана один раз на каждую правку
+
+            try{
+                Current = new ProjectHandle(H.Dir, __Read(H.Dir));
+
+                Log("bridge.json изменён, перечитан.", "Info");
+                __Sync(Current);
+
+                return true;
+            }catch(Exception e){
+                Log($"Не удалось перечитать bridge.json: {e.Message}", "Error");
+                return false;
+            }
+        }
+    }
+
+    /// Состояние плейса из Studio относительно открытого проекта.
+    public static string CheckPlace(long PlaceId, long UniverseId){
+        ProjectHandle? P = Current;
+
+        if(PlaceId == 0 || UniverseId == 0){ return "local"; }
+        if(P == null){                       return "noProject"; }
+        if(P.Data.UniverseId != UniverseId){ return "otherGame"; }
+
+        return P.Data.Places.ContainsKey(PlaceId.ToString()) ? "ready" : "newPlace";
+    }
+
+    // ----------------------------------------------------------------------
+
+    private static ProjectData __Read(string Dir){
+        ProjectData? Data = JsonSerializer.Deserialize<ProjectData>(File.ReadAllText(Path.Combine(Dir, MarkerFile)), __Json);
+
+        if(Data == null){
+            throw new Exception($"{MarkerFile} пуст или повреждён.");
+        }
+
+        if(Data.Format > FormatVersion){
+            throw new Exception($"Проект создан более новой версией RobloxBridge (формат {Data.Format}, поддерживается {FormatVersion}).");
+        }
+
+        Data.Places ??= [];
+
+        if(string.IsNullOrWhiteSpace(Data.Name)){
+            Data.Name = new DirectoryInfo(Dir).Name;
+        }
+
+        return Data;
+    }
+
+    private static void __Write(string Dir, ProjectData Data){
+        string Marker = Path.Combine(Dir, MarkerFile);
+
+        File.WriteAllText(Marker, JsonSerializer.Serialize(Data, __Json));
+        __Stamp = File.GetLastWriteTimeUtc(Marker); // собственную запись за ручную правку не считаем
+    }
+
+    private static bool __IsValidName(string Name){
+        return !string.IsNullOrWhiteSpace(Name)
+            && Name == Name.Trim()
+            && Name != "." && Name != ".."
+            && !Name.EndsWith('.')
+            && Name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0;
+    }
+
+    /// Приводит папки Places/ в соответствие с bridge.json: создаёт недостающие, переименовывает по новому имени.
+    private static void __Sync(ProjectHandle H){
+        string PlacesPath = Path.Combine(H.Dir, PlacesDir);
+        HashSet<string> Used = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach(var (Id, Name) in H.Data.Places){
+            if(!long.TryParse(Id, out long PlaceId)){
+                Log($"Places: некорректный PlaceId «{Id}».", "Error");
+                continue;
+            }
+
+            if(!__IsValidName(Name)){
+                Log($"Places: недопустимое имя папки «{Name}» (плейс {Id}).", "Error");
+                continue;
+            }
+
+            if(!Used.Add(Name)){
+                Log($"Places: имя папки «{Name}» используется несколько раз.", "Error");
+                continue;
+            }
+
+            try{
+                string Target = Path.Combine(PlacesPath, Name);
+
+                if(!Directory.Exists(Target)){
+                    Directory.CreateDirectory(PlacesPath);
+
+                    string? Old = __FindByPlaceId(PlacesPath, PlaceId);
+
+                    if(Old != null){
+                        Directory.Move(Old, Target);
+                        Log($"Папка плейса {Id} переименована: {Path.GetFileName(Old)} → {Name}", "Info");
+                    }else{
+                        Directory.CreateDirectory(Target);
+                    }
+                }
+
+                string PlaceJson = Path.Combine(Target, PlaceFile);
+
+                if(!File.Exists(PlaceJson)){
+                    PlaceData Place = new(){ PlaceId = PlaceId, Created = DateTime.Now.ToString("o") };
+                    File.WriteAllText(PlaceJson, JsonSerializer.Serialize(Place, __Json));
+                }
+            }catch(Exception e){
+                Log($"Папка плейса {Id} («{Name}»): {e.Message}", "Error");
+            }
+        }
+    }
+
+    /// Ищет папку плейса по PlaceId из place.json (на случай, если её переименовали).
+    private static string? __FindByPlaceId(string PlacesPath, long PlaceId){
+        foreach(string Dir in Directory.EnumerateDirectories(PlacesPath)){
+            string File_ = Path.Combine(Dir, PlaceFile);
+            if(!File.Exists(File_)){ continue; }
+
+            try{
+                PlaceData? Place = JsonSerializer.Deserialize<PlaceData>(File.ReadAllText(File_), __Json);
+                if(Place?.PlaceId == PlaceId){ return Dir; }
+            }catch{
+            }
+        }
+
+        return null;
+    }
+}
+
+// ==========================================================================
+// Нативный диалог выбора папки (IFileOpenDialog). Вызывать только из STA-потока.
+
+public static class FolderDialog{
+    private const uint FOS_PICKFOLDERS     = 0x00000020;
+    private const uint FOS_FORCEFILESYSTEM = 0x00000040;
+    private const uint FOS_PATHMUSTEXIST   = 0x00000800;
+    private const uint SIGDN_FILESYSPATH   = 0x80058000;
+
+    private const uint WS_POPUP         = 0x80000000;
+    private const uint WS_EX_TOPMOST    = 0x00000008;
+    private const uint WS_EX_TOOLWINDOW = 0x00000080;
+    private const int  SW_SHOWNA        = 8;
+
+    private const int HResultCancelled = unchecked((int)0x800704C7);
+
+    /// Возвращает путь к папке или null, если пользователь отменил выбор.
+    public static string? Pick(string Title){
+        // Невидимое TopMost-окно-владелец, чтобы диалог не терялся за Studio
+        IntPtr Owner = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, "STATIC", "", WS_POPUP, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+
+        if(Owner != IntPtr.Zero){
+            ShowWindow(Owner, SW_SHOWNA);
+            SetForegroundWindow(Owner);
+        }
+
+        try{
+            IFileOpenDialog Dialog = (IFileOpenDialog)new FileOpenDialogCom();
+
+            try{
+                Dialog.GetOptions(out uint Options);
+                Dialog.SetOptions(Options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+                Dialog.SetTitle(Title);
+
+                int Hr = Dialog.Show(Owner);
+
+                if(Hr == HResultCancelled){ return null; }
+                Marshal.ThrowExceptionForHR(Hr);
+
+                Dialog.GetResult(out IShellItem Item);
+
+                try{
+                    Item.GetDisplayName(SIGDN_FILESYSPATH, out IntPtr Ptr);
+
+                    try{
+                        return Marshal.PtrToStringUni(Ptr);
+                    }
+                    finally{
+                        Marshal.FreeCoTaskMem(Ptr);
+                    }
+                }
+                finally{
+                    Marshal.ReleaseComObject(Item);
+                }
+            }
+            finally{
+                Marshal.ReleaseComObject(Dialog);
+            }
+        }
+        finally{
+            if(Owner != IntPtr.Zero){ DestroyWindow(Owner); }
+        }
+    }
+
+    [ComImport, Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]
+    private class FileOpenDialogCom{}
+
+    // Порядок методов важен: это vtable. Ненужные методы объявлены как заглушки.
+    [ComImport, Guid("D57C7288-D4AD-4768-BE02-9D969532D960"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IFileOpenDialog{
+        [PreserveSig]
+        int Show(IntPtr Owner);
+        void SetFileTypes(uint Count, IntPtr Types);
+        void SetFileTypeIndex(uint Index);
+        void GetFileTypeIndex(out uint Index);
+        void Advise(IntPtr Events, out uint Cookie);
+        void Unadvise(uint Cookie);
+        void SetOptions(uint Options);
+        void GetOptions(out uint Options);
+        void SetDefaultFolder(IShellItem Item);
+        void SetFolder(IShellItem Item);
+        void GetFolder(out IShellItem Item);
+        void GetCurrentSelection(out IShellItem Item);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string Name);
+        void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string Name);
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string Title);
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string Text);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string Text);
+        void GetResult(out IShellItem Item);
+        void AddPlace(IShellItem Item, uint Placement);
+        void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string Extension);
+        void Close(int Hr);
+        void SetClientGuid(ref Guid Guid);
+        void ClearClientData();
+        void SetFilter(IntPtr Filter);
+        void GetResults(out IntPtr Items);
+        void GetSelectedItems(out IntPtr Items);
+    }
+
+    [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellItem{
+        void BindToHandler(IntPtr Pbc, ref Guid Bhid, ref Guid Riid, out IntPtr Ppv);
+        void GetParent(out IShellItem Item);
+        void GetDisplayName(uint Sigdn, out IntPtr Name);
+        void GetAttributes(uint Mask, out uint Attributes);
+        void Compare(IShellItem Other, uint Hint, out int Order);
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateWindowExW(uint ExStyle, string ClassName, string? WindowName, uint Style, int X, int Y, int Width, int Height, IntPtr Parent, IntPtr Menu, IntPtr Instance, IntPtr Param);
+
+    [DllImport("user32.dll")]
+    private static extern bool DestroyWindow(IntPtr Hwnd);
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr Hwnd, int Cmd);
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr Hwnd);
 }

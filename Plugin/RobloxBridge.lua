@@ -7,6 +7,11 @@ local Value = {
 	PingInterval = 3,
 }
 
+local White = Color3.fromRGB(235, 235, 235)
+local Green = Color3.fromRGB(110, 220, 130)
+local Yellow = Color3.fromRGB(230, 180, 60)
+local Red = Color3.fromRGB(235, 90, 90)
+
 local function make(ClassName, Props, Parent)
 	local Obj = Instance.new(ClassName)
 	for Key, Val in pairs(Props) do
@@ -32,6 +37,7 @@ Widget.Title = Value.Name
 local CurrentPort = plugin:GetSetting("Port") or Value.DefaultPort
 local IsPinging = false
 local LastPingClock = 0
+local ActionPath = nil -- куда POST-ит кнопка действия
 
 local function getServerUrl()
 	return "http://localhost:" .. tostring(CurrentPort)
@@ -41,8 +47,6 @@ local function getPlaceInfo()
 	return {
 		PlaceId = game.PlaceId,
 		UniverseId = game.GameId,
-		PlaceName = game.Name,
-		RobloxVersion = version(),
 	}
 end
 
@@ -55,20 +59,15 @@ local MainFrame = make("Frame", {
 	BorderSizePixel = 0,
 }, Widget)
 
-local TitleBar = make("Frame", {
+make("TextLabel", {
 	Size = UDim2.new(1, 0, 0, 40),
 	BackgroundColor3 = Color3.fromRGB(20, 20, 24),
 	BorderSizePixel = 0,
-}, MainFrame)
-
-make("TextLabel", {
-	Size = UDim2.new(1, 0, 1, 0),
-	BackgroundTransparency = 1,
 	Text = Value.Name,
-	TextColor3 = Color3.fromRGB(240, 240, 240),
+	TextColor3 = White,
 	Font = Enum.Font.SourceSansBold,
 	TextSize = 20,
-}, TitleBar)
+}, MainFrame)
 
 local Content = make("Frame", {
 	Size = UDim2.new(1, 0, 1, -40),
@@ -94,7 +93,6 @@ local StatusRow = make("Frame", {
 local StatusDot = make("Frame", {
 	Size = UDim2.fromOffset(10, 10),
 	Position = UDim2.new(0, 0, 0, 4),
-	BackgroundColor3 = Color3.fromRGB(200, 60, 60),
 	BorderSizePixel = 0,
 }, StatusRow)
 make("UICorner", { CornerRadius = UDim.new(1, 0) }, StatusDot)
@@ -105,7 +103,7 @@ local StatusText = make("TextLabel", {
 	BackgroundTransparency = 1,
 	Font = Enum.Font.SourceSans,
 	TextSize = 14,
-	TextColor3 = Color3.fromRGB(220, 220, 220),
+	TextColor3 = White,
 	TextXAlignment = Enum.TextXAlignment.Left,
 }, StatusRow)
 
@@ -150,78 +148,71 @@ local InfoLabel = make("TextLabel", {
 	AutomaticSize = Enum.AutomaticSize.Y,
 	BackgroundTransparency = 1,
 	Font = Enum.Font.SourceSansBold,
-	TextSize = 15,
-	TextColor3 = Color3.fromRGB(240, 240, 240),
+	TextSize = 14,
 	TextXAlignment = Enum.TextXAlignment.Left,
 	TextWrapped = true,
 	LayoutOrder = 1,
 }, ProjectFrame)
 
-local WarnLabel = make("TextLabel", {
-	Size = UDim2.new(1, 0, 0, 0),
-	AutomaticSize = Enum.AutomaticSize.Y,
-	BackgroundTransparency = 1,
-	Font = Enum.Font.SourceSans,
-	TextSize = 13,
-	TextXAlignment = Enum.TextXAlignment.Left,
-	TextWrapped = true,
-	LayoutOrder = 2,
-}, ProjectFrame)
-
-local CreateButton = make("TextButton", {
+local ActionButton = make("TextButton", {
 	Size = UDim2.new(1, 0, 0, 32),
 	BackgroundColor3 = Color3.fromRGB(46, 125, 50),
-	Text = "Создать проект из этого плейса",
 	Font = Enum.Font.SourceSansBold,
 	TextSize = 14,
 	TextColor3 = Color3.fromRGB(255, 255, 255),
 	BorderSizePixel = 0,
-	LayoutOrder = 3,
+	Visible = false,
+	LayoutOrder = 2,
 }, ProjectFrame)
 
 -- ----------------------------------------------------------------------
 -- Отрисовка по ответу /ping (State == nil, если сервер не найден)
 
-local Green = Color3.fromRGB(110, 220, 130)
-local Yellow = Color3.fromRGB(230, 180, 60)
-local Red = Color3.fromRGB(235, 90, 90)
+local function setInfo(Text, Color)
+	InfoLabel.Text = Text
+	InfoLabel.TextColor3 = Color
+end
 
-local PlaceMessages = {
-	match = { "✔ Плейс совпадает с проектом", Green },
-	unbound = { "⚠ Проект не привязан к плейсу (создан до публикации)", Yellow },
-	["local"] = { "⚠ Плейс не сохранён в Roblox, привязку проверить нельзя", Yellow },
-	sameGame = { "⚠ Это другой плейс той же игры, чем в проекте", Yellow },
-	other = { "⛔ Проект привязан к другой игре! Не перезаписывайте файлы", Red },
-}
+local function setAction(Text, Path)
+	ActionButton.Text = Text
+	ActionButton.Visible = true
+	ActionPath = Path
+end
 
 local function render(State)
+	ActionButton.Visible = false
+	ActionPath = nil
+
 	if not State then
-		StatusDot.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
+		StatusDot.BackgroundColor3 = Red
 		StatusText.Text = ("Поиск сервера (порт %d)..."):format(CurrentPort)
 		ProjectFrame.Visible = false
 		return
 	end
 
-	StatusDot.BackgroundColor3 = Color3.fromRGB(60, 200, 90)
+	StatusDot.BackgroundColor3 = Green
 	StatusText.Text = ("Подключено (порт %d)"):format(CurrentPort)
 	ProjectFrame.Visible = true
 
-	CreateButton.Visible = false
-	WarnLabel.Text = ""
+	local Place = State.place
+	local Project = tostring(State.project)
 
-	if State.project then
-		InfoLabel.Text = "Проект: " .. tostring(State.project)
-
-		local Msg = PlaceMessages[State.place]
-		if Msg then
-			WarnLabel.Text = Msg[1]
-			WarnLabel.TextColor3 = Msg[2]
+	if Place == "local" then
+		setInfo("⚠ Плейс не опубликован в Roblox. File → Publish to Roblox (можно оставить приватным).", Yellow)
+	elseif Place == "noProject" then
+		if State.creating then
+			setInfo("Выберите папку в окне RobloxBridge...", Yellow)
+		else
+			setInfo("Для этой игры нет проекта.", White)
+			setAction("Создать проект для этой игры", "/project/create")
 		end
-	elseif State.creating then
-		InfoLabel.Text = "Выберите папку в окне RobloxBridge..."
-	else
-		InfoLabel.Text = "Проект не создан."
-		CreateButton.Visible = true
+	elseif Place == "otherGame" then
+		setInfo(("⛔ В приложении открыт проект «%s» другой игры. Закройте его в приложении."):format(Project), Red)
+	elseif Place == "newPlace" then
+		setInfo(("Проект «%s». Этого плейса в нём ещё нет."):format(Project), White)
+		setAction("Добавить этот плейс в проект", "/place/add")
+	elseif Place == "ready" then
+		setInfo(("✔ Проект «%s», папка плейса: Places/%s"):format(Project, tostring(State.folder)), Green)
 	end
 end
 
@@ -290,26 +281,29 @@ PortInput.FocusLost:Connect(function()
 end)
 
 -- ----------------------------------------------------------------------
--- Создание проекта
+-- Кнопка действия (создать проект / добавить плейс)
 
-CreateButton.MouseButton1Click:Connect(function()
-	CreateButton.Visible = false
+ActionButton.MouseButton1Click:Connect(function()
+	local Path = ActionPath
+	if not Path then return end
+
+	ActionButton.Visible = false
 	InfoLabel.Text = "Отправляю запрос..."
 
 	task.spawn(function()
 		local Ok, Err = pcall(function()
 			HttpService:PostAsync(
-				getServerUrl() .. "/project/create",
+				getServerUrl() .. Path,
 				HttpService:JSONEncode(getPlaceInfo()),
 				Enum.HttpContentType.ApplicationJson
 			)
 		end)
 
-		if Ok then
-			LastPingClock = 0 -- сразу обновить состояние
-		else
-			InfoLabel.Text = "Ошибка: " .. tostring(Err)
+		if not Ok then
+			setInfo("Ошибка: " .. tostring(Err), Red)
 		end
+
+		LastPingClock = 0 -- сразу обновить состояние
 	end)
 end)
 
