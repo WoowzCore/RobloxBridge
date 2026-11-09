@@ -80,6 +80,22 @@ const Handlers = {
     }
 };
 
+Handlers.DumpState = function(D){
+  document.getElementById("DumpBar").className = "dump-" + D.State;
+  document.getElementById("DumpText").textContent = D.Message;
+  var Sub = [];
+  if(D.State == "missing" || D.State == "broken"){
+    Sub.push("1) «Скачать на GitHub» → 2) на странице кнопка Download raw file (⬇) → 3) «Выбрать файл…». Пока файла нет, работа заблокирована.");
+  }
+  if(D.Path){ Sub.push(D.Path); }
+  if(D.Classes){ Sub.push("классов " + D.Classes + ", свойств " + D.Props + ", хеш " + D.Hash); }
+  if(D.DumpStudio){ Sub.push("принят для Studio " + D.DumpStudio); }
+  if(D.Studio){ Sub.push("сейчас Studio " + D.Studio); }
+  document.getElementById("DumpSub").textContent = Sub.join(" · ");
+};
+El("DumpGit").onclick  = () => SendToHost("OpenDumpPage");
+El("DumpPick").onclick = () => SendToHost("PickDump");
+
 El("Btn-StartStop").onclick = () => {
     if(IsRunning){ SendToHost("StopServer"); return; }
 
@@ -153,6 +169,14 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
 #ErrorTitle{ color:#f66; font-size:15px; }
 #ErrorDetails{ color:#e0b0b0; font-size:12px; white-space:pre-wrap; overflow-y:auto; }
 #ErrorClose{ align-self:flex-end; background:#c00; }
+
+#DumpBar{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #333}
+#DumpBar .Grow{flex:1;min-width:0}
+#DumpBar .Sub{font-size:11px;opacity:.7;word-break:break-all}
+#DumpBar.dump-missing,#DumpBar.dump-broken{background:#4a1f1f}
+#DumpBar.dump-outdated,#DumpBar.dump-newer{background:#4a3d12}
+#DumpBar.dump-ok{background:#1d3a24}
+#DumpBar.dump-checking{background:#2a2a2a}
 </style>
 </head>
 <body>
@@ -164,6 +188,12 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
         <input type="number" id="Input-Port" min="1" max="65535" value="4949">
         <button id="Btn-StartStop">▶ Запустить</button>
         <button id="Btn-ClearLog">Очистить лог</button>
+    </div>
+
+    <div id="DumpBar" class="dump-missing">
+        <div class="Grow"><div id="DumpText"></div><div id="DumpSub" class="Sub"></div></div>
+        <button id="DumpGit">Скачать на GitHub</button>
+        <button id="DumpPick">Выбрать файл…</button>
     </div>
 
     <div class="Bar">

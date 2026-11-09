@@ -1,6 +1,8 @@
 ﻿using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using WLO;
@@ -36,6 +38,11 @@ public static class Bootstrap{
             WL.Core.Start(Args);
 
             Settings.Load();
+            
+            Dump.Log = Text => __EnqueueLog(Text, "Info");        // подставь свой Kind
+            Dump.Changed = () => __Post("DumpState", Dump.Snapshot());
+            Dump.Open();
+            
             Project.Log   = __EnqueueLog;
             __CurrentPort = Settings.Port;
 
@@ -90,6 +97,7 @@ public static class Bootstrap{
                     __SendProject();
                     __UpdateWindowTitle();
                     __EnqueueLog("RobloxBridge готов к запуску.", "Info");
+                    __Post("DumpState", Dump.Snapshot());
                     break;
 
                 case "StartServer":{
@@ -115,6 +123,9 @@ public static class Bootstrap{
                     __CloseProject();
                     break;
 
+                case "PickDump": __PickDump(); break;
+                case "OpenDumpPage": Process.Start(new ProcessStartInfo(Dump.GitHubUrl){ UseShellExecute = true }); break;
+                
                 default:
                     WL.Logger.Warn($"Получено неизвестное сообщение от Web, Тип: {Type}");
                     break;
@@ -127,6 +138,16 @@ public static class Bootstrap{
     // ----------------------------------------------------------------------
     // Проект
 
+    static void __PickDump(){
+        Thread T = new Thread(() => {
+            string F = FileDialog.Pick("Выберите Full-API-Dump.json");
+            if(F != null){ Dump.Choose(F); }   // внутри сработает Changed → DumpState в UI
+        });
+        T.SetApartmentState(ApartmentState.STA);
+        T.IsBackground = true;
+        T.Start();
+    }
+    
     /// Диалог выбора папки в отдельном STA-потоке. OnPicked вызывается из этого потока, Folder == null при отмене.
     private static void __PickFolder(string Title, Action<string?> OnPicked){
         if(__DialogOpen){ return; }
@@ -178,7 +199,7 @@ public static class Bootstrap{
 
     private static void __TryReopenLastProject(){
         string? Last = Settings.LastProject;
-        if(Project.IsOpen || Last == null){ return; }
+        if(Project.IsOpen || string.IsNullOrEmpty(Last)){ return; }
 
         if(Project.TryOpen(Last, out string Error)){
             __EnqueueLog($"Открыт последний проект: {Project.Current!.Data.Name}", "Info");
@@ -322,67 +343,94 @@ public static class Bootstrap{
         return JsonSerializer.Deserialize<PlaceInfo>(Reader.ReadToEnd(), __JsonIn);
     }
 
-    private static (int Code, string Body) __Route(HttpListenerRequest Request){
-        string Route = Request.Url?.AbsolutePath ?? "";
+    private static string __ReadBody(HttpListenerRequest Request){
+    using StreamReader Reader = new(Request.InputStream, Encoding.UTF8);
+    return Reader.ReadToEnd();
+}
 
-        // /ping не логируем, чтобы не засорять лог
-        if(Route == "/ping"){
-            __LastPingTime = DateTime.Now;
+private static (int Code, string Body) __Route(HttpListenerRequest Request){
+    string Route = Request.Url?.AbsolutePath ?? "";
 
-            // Подхватываем ручные правки bridge.json (например, переименование папки плейса)
-            if(Project.Refresh()){ __SendProject(); }
+    // /ping не логируем, чтобы не засорять лог
+    if(Route == "/ping"){
+        __LastPingTime = DateTime.Now;
 
-            long.TryParse(Request.QueryString["place"],    out long PlaceId);
-            long.TryParse(Request.QueryString["universe"], out long UniverseId);
+        // Версия Studio → проверка дампа (должна выполняться на каждом пинге, даже при блокировке)
+        Dump.OnPing(Request.QueryString["studio"]);
 
-            ProjectHandle? P      = Project.Current;
-            string?        Folder = null;
-            P?.Data.Places.TryGetValue(PlaceId.ToString(), out Folder);
+        // Подхватываем ручные правки bridge.json (например, переименование папки плейса)
+        if(Project.Refresh()){ __SendProject(); }
 
-            return (200, JsonSerializer.Serialize(new{
-                status   = "ok",
-                project  = P?.Data.Name,
-                creating = __Creating,
-                place    = Project.CheckPlace(PlaceId, UniverseId),
-                folder   = Folder
-            }));
-        }
+        long.TryParse(Request.QueryString["place"],    out long PlaceId);
+        long.TryParse(Request.QueryString["universe"], out long UniverseId);
 
-        __EnqueueLog($"{Request.HttpMethod} {Route}", "Request");
+        ProjectHandle? P      = Project.Current;
+        string?        Folder = null;
+        P?.Data.Places.TryGetValue(PlaceId.ToString(), out Folder);
 
-        switch(Route){
-            case "/project/create":{
-                if(Request.HttpMethod != "POST"){ return (405, __Err("Нужен POST")); }
-                if(Project.IsOpen){               return (409, __Err("Проект уже открыт")); }
-
-                PlaceInfo? Info = __ReadInfo(Request);
-                if(Info == null || Info.UniverseId == 0){
-                    return (400, __Err("Плейс не опубликован в Roblox"));
-                }
-
-                __BeginCreate(Info);
-                return (200, """{"status":"waiting"}""");
-            }
-
-            case "/place/add":{
-                if(Request.HttpMethod != "POST"){ return (405, __Err("Нужен POST")); }
-
-                PlaceInfo? Info = __ReadInfo(Request);
-                if(Info == null){ return (400, __Err("Пустой запрос")); }
-
-                if(!Project.TryAddPlace(Info, out string Error)){
-                    __EnqueueLog($"Не удалось добавить плейс: {Error}", "Error");
-                    return (409, __Err(Error));
-                }
-
-                __SendProject();
-                return (200, """{"status":"ok"}""");
-            }
-
-            default:
-                return (404, __Err("Not Found"));
-        }
+        return (200, JsonSerializer.Serialize(new{
+            status   = "ok",
+            project  = P?.Data.Name,
+            creating = __Creating,
+            place    = Dump.Blocking ? "noDump" : Project.CheckPlace(PlaceId, UniverseId),
+            folder   = Folder,
+            dump     = Dump.PingInfo()
+        }));
     }
+
+    // Схему и результат проверки не засоряем в лог
+    if(Route != "/schema" && Route != "/dump/probe"){
+        __EnqueueLog($"{Request.HttpMethod} {Route}", "Request");
+    }
+
+    switch(Route){
+        case "/schema":{
+            string? Schema = Dump.SchemaJson;
+            if(Schema == null){ return (503, """{"status":"missing"}"""); }
+            return (200, Schema);
+        }
+
+        case "/dump/probe":{
+            if(Request.HttpMethod != "POST"){ return (405, __Err("Нужен POST")); }
+
+            Dump.OnProbe(__ReadBody(Request));
+            return (200, """{"status":"ok"}""");
+        }
+
+        case "/project/create":{
+            if(Request.HttpMethod != "POST"){ return (405, __Err("Нужен POST")); }
+            if(Dump.Blocking){                return (409, __Err(Dump.Message)); }
+            if(Project.IsOpen){               return (409, __Err("Проект уже открыт")); }
+
+            PlaceInfo? Info = __ReadInfo(Request);
+            if(Info == null || Info.UniverseId == 0){
+                return (400, __Err("Плейс не опубликован в Roblox"));
+            }
+
+            __BeginCreate(Info);
+            return (200, """{"status":"waiting"}""");
+        }
+
+        case "/place/add":{
+            if(Request.HttpMethod != "POST"){ return (405, __Err("Нужен POST")); }
+            if(Dump.Blocking){                return (409, __Err(Dump.Message)); }
+
+            PlaceInfo? Info = __ReadInfo(Request);
+            if(Info == null){ return (400, __Err("Пустой запрос")); }
+
+            if(!Project.TryAddPlace(Info, out string Error)){
+                __EnqueueLog($"Не удалось добавить плейс: {Error}", "Error");
+                return (409, __Err(Error));
+            }
+
+            __SendProject();
+            return (200, """{"status":"ok"}""");
+        }
+
+        default:
+            return (404, __Err("Not Found"));
+    }
+}
 
     // ----------------------------------------------------------------------
     // Отправка в Web
@@ -446,44 +494,37 @@ public static class Bootstrap{
 // Настройки приложения (порт и последний проект, на каждом ПК свои)
 
 public static class Settings{
-    private sealed class Data{
-        public int     Port        { get; set; } = 4949;
-        public string? LastProject { get; set; }
+    public class Data{
+        public int Port{ get; set; } = 4949;
+        public string? LastProject{ get; set; } = null;
+        public string DumpPath{ get; set; } = "";
+        public string DumpHash{ get; set; } = "";
+        public string DumpStudio{ get; set; } = "";     // версия Studio, при которой дамп принят
+        public string DumpProbe{ get; set; } = "";      // "хеш|релиз" — для чего проверка Studio уже пройдена
+        public int DumpProbeMissing{ get; set; } = 0;   // сколько элементов дампа не нашлось в Studio
+        public string DumpProbeInfo{ get; set; } = "";
     }
 
-    private static readonly string __File = Path.Combine(AppContext.BaseDirectory, "robloxbridge.settings.json");
-    private static Data __Data = new();
+    static Data   __D    = new Data();
+    static string __File = Path.Combine(AppContext.BaseDirectory, "robloxbridge.settings.json");
 
-    public static int Port{
-        get => __Data.Port;
-        set{ __Data.Port = value; __Save(); }
-    }
-
-    public static string? LastProject{
-        get => __Data.LastProject;
-        set{ __Data.LastProject = value; __Save(); }
-    }
-
+    public static int Port{ get => __D.Port; set => __D.Port = value; }
+    public static string? LastProject{ get => __D.LastProject; set => __D.LastProject = value; }
+    public static string DumpPath{ get => __D.DumpPath; set => __D.DumpPath = value; }
+    public static string DumpHash{ get => __D.DumpHash; set => __D.DumpHash = value; }
+    public static string DumpStudio{ get => __D.DumpStudio; set => __D.DumpStudio = value; }
+    public static string DumpProbe{ get => __D.DumpProbe; set => __D.DumpProbe = value; }
+    public static int DumpProbeMissing{ get => __D.DumpProbeMissing; set => __D.DumpProbeMissing = value; }
+    public static string DumpProbeInfo{ get => __D.DumpProbeInfo; set => __D.DumpProbeInfo = value; }
+    
     public static void Load(){
         try{
-            if(!File.Exists(__File)){ return; }
-
-            Data? Loaded = JsonSerializer.Deserialize<Data>(File.ReadAllText(__File));
-            if(Loaded == null){ return; }
-
-            if(Loaded.Port is < 1 or > 65535){ Loaded.Port = 4949; }
-            __Data = Loaded;
-        }catch(Exception e){
-            WL.Logger.Warn("Не удалось загрузить настройки.", e);
-        }
+            if(File.Exists(__File)){ __D = JsonSerializer.Deserialize<Data>(File.ReadAllText(__File)) ?? new Data(); }
+        }catch{ __D = new Data(); }
     }
 
-    private static void __Save(){
-        try{
-            File.WriteAllText(__File, JsonSerializer.Serialize(__Data, new JsonSerializerOptions{ WriteIndented = true }));
-        }catch(Exception e){
-            WL.Logger.Warn("Не удалось сохранить настройки.", e);
-        }
+    public static void Save(){
+        try{ File.WriteAllText(__File, JsonSerializer.Serialize(__D, new JsonSerializerOptions{ WriteIndented = true })); }catch{}
     }
 }
 
@@ -759,6 +800,288 @@ public static class Project{
         }
 
         return null;
+    }
+}
+
+public static class Dump{
+    public const string GitHubUrl = "https://github.com/MaximumADHD/Roblox-Client-Tracker/blob/roblox/Full-API-Dump.json";
+
+    static bool __BlockOnOutdated = false;   // true — при устаревшем дампе тоже блокировать работу
+
+    public static string State = "missing";  // missing | broken | checking | ok | outdated | newer
+    public static string Message = "Файл дампа API не выбран";
+    public static string SchemaJson = null;
+    public static string Studio = "";        // версия Studio из последнего пинга
+    public static int Classes, Props;
+    public static string DiffText = "";
+    public static Action<string> Log = Text => {};
+    public static Action Changed = () => {};
+
+    static string __Hash = "";
+    static string __Stamp = "";
+    static int __Cmp = 0;                    // >0 Studio новее дампа, <0 дамп новее Studio
+    static string __CacheFile = Path.Combine(AppContext.BaseDirectory, "cache", "schema.json");
+
+    public static bool Blocking => State == "missing" || State == "broken" || (__BlockOnOutdated && State == "outdated");
+    public static bool NeedProbe => SchemaJson != null && Studio != "" && __Cmp == 0 && Settings.DumpProbe != __ProbeKey();
+
+    // ---- вызывается при каждом /ping ----
+    public static void OnPing(string StudioVersion){
+        __CheckFile();
+        if(!string.IsNullOrEmpty(StudioVersion) && StudioVersion != Studio){
+            Studio = StudioVersion;
+            Evaluate();
+        }
+    }
+
+    public static object PingInfo(){
+        return new{
+            state = State, message = Message, blocking = Blocking, probe = NeedProbe,
+            studio = Studio, dumpStudio = Settings.DumpStudio, hash = __Hash, classes = Classes, props = Props
+        };
+    }
+
+    public static object Snapshot(){
+        return new{ State, Message, Blocking, Path = Settings.DumpPath, Studio, DumpStudio = Settings.DumpStudio,
+                    Hash = __Hash, Classes, Props, Diff = DiffText };
+    }
+
+    // ---- пользователь выбрал файл ----
+    public static void Choose(string FilePath){
+        Settings.DumpPath = FilePath;
+        Settings.Save();
+        __Stamp = "";
+        Open();
+    }
+
+    public static void Open(){
+        string FilePath = Settings.DumpPath;
+        SchemaJson = null; Classes = 0; Props = 0; __Hash = "";
+        if(string.IsNullOrEmpty(FilePath)){ __Set("missing", "Файл дампа API не выбран"); Changed(); return; }
+        if(!File.Exists(FilePath)){ __Set("missing", "Файл дампа не найден: " + FilePath); Changed(); return; }
+        try{
+            __Stamp = File.GetLastWriteTimeUtc(FilePath).Ticks.ToString();
+            byte[] Bytes = File.ReadAllBytes(FilePath);
+            string Hash = Convert.ToHexString(SHA256.HashData(Bytes)).Substring(0, 12);
+            string NewSchema = __Build(Bytes, out int ClassCount, out int PropCount);
+
+            if(Hash != Settings.DumpHash){   // новый файл
+                string Old = File.Exists(__CacheFile) ? File.ReadAllText(__CacheFile) : null;
+                DiffText = Old != null ? __Diff(Old, NewSchema) : "";
+                Directory.CreateDirectory(Path.GetDirectoryName(__CacheFile));
+                File.WriteAllText(__CacheFile, NewSchema);
+                Settings.DumpHash = Hash;
+                Settings.DumpStudio = "";    // примем при ближайшем пинге для текущей Studio
+                Settings.DumpProbe = "";
+                Settings.DumpProbeMissing = 0;
+                Settings.DumpProbeInfo = "";
+                Settings.Save();
+                Log("Дамп загружен (" + Hash + "): классов " + ClassCount + ", свойств " + PropCount);
+                if(DiffText != ""){ Log(DiffText); }
+            }
+            __Hash = Hash; SchemaJson = NewSchema; Classes = ClassCount; Props = PropCount;
+            Evaluate();
+        }catch(Exception Ex){
+            __Set("broken", "Файл не подходит: " + Ex.Message);
+        }
+        Changed();
+    }
+
+    // ---- результат проверки из плагина ----
+    public static void OnProbe(string Body){
+        try{
+            using JsonDocument Doc = JsonDocument.Parse(Body);
+            JsonElement R = Doc.RootElement;
+
+            bool Skipped  = R.TryGetProperty("Skipped", out JsonElement Sk) && Sk.GetBoolean();
+            int  Missing  = R.TryGetProperty("Missing", out JsonElement Mi) ? Mi.GetInt32() : 0;
+            int  Checked  = R.TryGetProperty("Checked", out JsonElement Ch) ? Ch.GetInt32() : 0;
+            int  ClassCnt = R.TryGetProperty("Classes", out JsonElement Cl) ? Cl.GetInt32() : 0;
+
+            List<string> Samples = new List<string>();
+            if(R.TryGetProperty("Samples", out JsonElement Sm) && Sm.ValueKind == JsonValueKind.Array){
+                foreach(JsonElement S in Sm.EnumerateArray()){ Samples.Add(S.GetString() ?? ""); }
+            }
+
+            string Info = Skipped ? "Проверка пропущена: прошлая не завершилась (возможно, Studio упала)"
+                : Missing == 0 ? "Проверено классов " + ClassCnt + ", свойств " + Checked + ": всё найдено"
+                : "Проверено классов " + ClassCnt + ", свойств " + Checked + ": не найдено " + Missing;
+
+            Settings.DumpProbe = __ProbeKey();
+            Settings.DumpProbeMissing = Missing;
+            Settings.DumpProbeInfo = Info;
+            Settings.Save();
+
+            if(Missing > 0){
+                Log("Не найдено в Studio: " + string.Join(", ", Samples) + (Missing > Samples.Count ? " …и ещё " + (Missing - Samples.Count) : ""));
+            }
+            if(Missing > 0 || Skipped){ Log("Проверка дампа: " + Info); }
+
+            Evaluate();
+            Changed();
+        }catch(Exception Ex){ Log("Ошибка результата проверки дампа: " + Ex.Message); }
+    }
+
+    public static void Evaluate(){
+        if(SchemaJson == null){ return; }
+        if(Studio == ""){ __Set("checking", "Жду версию Studio от плагина"); return; }
+        if(Settings.DumpStudio == ""){
+            Settings.DumpStudio = Studio;
+            Settings.Save();
+            Log("Дамп принят для Studio " + Studio);
+        }
+        int A = __Rel(Settings.DumpStudio), B = __Rel(Studio);
+        __Cmp = (A < 0 || B < 0) ? (Settings.DumpStudio == Studio ? 0 : 1) : B.CompareTo(A);
+
+        if(__Cmp > 0){ __Set("outdated", "Roblox обновился (" + A + " → " + B + "). Скачайте свежий дамп и выберите его."); return; }
+        if(__Cmp < 0){ __Set("newer", "Дамп новее вашей Studio (" + A + " > " + B + "). Обновите Studio или возьмите дамп старее."); return; }
+        if(NeedProbe){ __Set("checking", "Проверяю дамп в Studio…"); return; }
+        if(Settings.DumpProbeMissing > 0){
+            __Set("newer", "В дампе есть " + Settings.DumpProbeMissing + " элементов, которых нет в Studio — дамп новее Studio.");
+            return;
+        }
+        __Set("ok", "Дамп совместим со Studio (релиз " + B + "). " + Settings.DumpProbeInfo);
+    }
+
+    // ---- внутреннее ----
+    static void __Set(string NewState, string NewMessage){
+        bool Diff = NewState != State || NewMessage != Message;
+        State = NewState; Message = NewMessage;
+        if(Diff){ Log(NewMessage); Changed(); }
+    }
+
+    static void __CheckFile(){
+        string FilePath = Settings.DumpPath;
+        if(string.IsNullOrEmpty(FilePath)){ return; }
+        string Now = File.Exists(FilePath) ? File.GetLastWriteTimeUtc(FilePath).Ticks.ToString() : "gone";
+        if(Now != __Stamp){ __Stamp = Now; Open(); }
+    }
+
+    static string __ProbeKey(){ return __Hash + "|" + __Rel(Studio); }
+
+    // "0.712.0.7120684" → 712
+    static int __Rel(string Version){
+        string[] Parts = (Version ?? "").Split('.');
+        return Parts.Length >= 2 && int.TryParse(Parts[1], out int N) ? N : -1;
+    }
+
+    static HashSet<string> __Tags(JsonElement E){
+        HashSet<string> R = new HashSet<string>();
+        if(E.TryGetProperty("Tags", out JsonElement T) && T.ValueKind == JsonValueKind.Array){
+            foreach(JsonElement X in T.EnumerateArray()){
+                if(X.ValueKind == JsonValueKind.String){ R.Add(X.GetString()); }
+            }
+        }
+        return R;
+    }
+
+    static bool __SecOk(JsonElement M){
+        if(!M.TryGetProperty("Security", out JsonElement S)){ return true; }
+        string Read, Write;
+        if(S.ValueKind == JsonValueKind.Object){ Read = S.GetProperty("Read").GetString(); Write = S.GetProperty("Write").GetString(); }
+        else{ Read = Write = S.GetString(); }
+        return (Read == "None" || Read == "PluginSecurity") && (Write == "None" || Write == "PluginSecurity");
+    }
+
+    static string __Build(byte[] Bytes, out int ClassCount, out int PropCount){
+        using JsonDocument Doc = JsonDocument.Parse(Bytes);
+        if(Doc.RootElement.ValueKind != JsonValueKind.Object || !Doc.RootElement.TryGetProperty("Classes", out JsonElement Cls) || Cls.ValueKind != JsonValueKind.Array){
+            throw new Exception("нет списка Classes — нужен именно Full-API-Dump.json");
+        }
+        ClassCount = 0; PropCount = 0;
+        using MemoryStream Ms = new MemoryStream();
+        using(Utf8JsonWriter W = new Utf8JsonWriter(Ms)){
+            W.WriteStartObject();
+            W.WriteStartObject("Classes");
+            foreach(JsonElement C in Cls.EnumerateArray()){
+                HashSet<string> CTags = __Tags(C);
+                W.WriteStartObject(C.GetProperty("Name").GetString());
+                W.WriteString("Super", C.TryGetProperty("Superclass", out JsonElement Sup) ? Sup.GetString() : "");
+                W.WriteBoolean("NotCreatable", CTags.Contains("NotCreatable"));
+                W.WriteBoolean("Service", CTags.Contains("Service"));
+                W.WriteStartObject("Props");
+                foreach(JsonElement M in C.GetProperty("Members").EnumerateArray()){
+                    if(M.GetProperty("MemberType").GetString() != "Property"){ continue; }
+                    string PName = M.GetProperty("Name").GetString();
+                    if(PName == "Parent"){ continue; }
+                    HashSet<string> MTags = __Tags(M);
+                    if(MTags.Contains("ReadOnly") || MTags.Contains("NotScriptable") || MTags.Contains("Deprecated")){ continue; }
+                    if(!M.TryGetProperty("Serialization", out JsonElement Ser) || !Ser.TryGetProperty("CanSave", out JsonElement CanSave) || !CanSave.GetBoolean()){ continue; }
+                    if(!__SecOk(M)){ continue; }
+                    JsonElement VT = M.GetProperty("ValueType");
+                    string Cat = VT.GetProperty("Category").GetString(), VName = VT.GetProperty("Name").GetString();
+                    if(VName == "BinaryString"){ continue; }
+                    string Type = Cat == "Enum" ? "Enum:" + VName : Cat == "Class" ? "Ref" : VName;
+                    W.WriteString(PName, Type);
+                    PropCount++;
+                }
+                W.WriteEndObject();
+                W.WriteEndObject();
+                ClassCount++;
+            }
+            W.WriteEndObject();
+            W.WriteEndObject();
+        }
+        if(PropCount == 0){ throw new Exception("в файле нет свойств с Serialization — нужен именно Full-API-Dump.json"); }
+        return System.Text.Encoding.UTF8.GetString(Ms.ToArray());
+    }
+
+    static HashSet<string> __Keys(string Json){
+        HashSet<string> R = new HashSet<string>();
+        using JsonDocument D = JsonDocument.Parse(Json);
+        foreach(JsonProperty C in D.RootElement.GetProperty("Classes").EnumerateObject()){
+            R.Add(C.Name);
+            foreach(JsonProperty P in C.Value.GetProperty("Props").EnumerateObject()){ R.Add(C.Name + "." + P.Name + ":" + P.Value.GetString()); }
+        }
+        return R;
+    }
+
+    static string __Diff(string Old, string New){
+        HashSet<string> A = __Keys(Old), B = __Keys(New);
+        List<string> Add = B.Where(K => !A.Contains(K)).OrderBy(K => K).ToList();
+        List<string> Del = A.Where(K => !B.Contains(K)).OrderBy(K => K).ToList();
+        if(Add.Count == 0 && Del.Count == 0){ return "Схема не изменилась"; }
+        int AddC = Add.Count(K => !K.Contains('.')), DelC = Del.Count(K => !K.Contains('.'));
+        string S = "Изменения схемы: классы +" + AddC + " −" + DelC + ", свойства +" + (Add.Count - AddC) + " −" + (Del.Count - DelC);
+        if(Add.Count > 0){ S += ". Новое: " + string.Join(", ", Add.Take(6).Select(K => K.Split(':')[0])); }
+        if(Del.Count > 0){ S += ". Пропало: " + string.Join(", ", Del.Take(6).Select(K => K.Split(':')[0])); }
+        return S;
+    }
+}
+
+// Нативный диалог «Открыть файл» (без WinForms)
+public static class FileDialog{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct OFN{
+        public int lStructSize; public IntPtr hwndOwner; public IntPtr hInstance;
+        public string lpstrFilter; public string lpstrCustomFilter; public int nMaxCustFilter; public int nFilterIndex;
+        public IntPtr lpstrFile; public int nMaxFile; public IntPtr lpstrFileTitle; public int nMaxFileTitle;
+        public string lpstrInitialDir; public string lpstrTitle; public int Flags;
+        public short nFileOffset; public short nFileExtension; public string lpstrDefExt;
+        public IntPtr lCustData; public IntPtr lpfnHook; public string lpTemplateName;
+        public IntPtr pvReserved; public int dwReserved; public int FlagsEx;
+    }
+
+    [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetOpenFileNameW")]
+    static extern bool GetOpenFileName(ref OFN O);
+    [DllImport("user32.dll")]
+    static extern IntPtr GetForegroundWindow();
+
+    public static string Pick(string Title){
+        const int Size = 1024;
+        IntPtr Buf = Marshal.AllocHGlobal(Size * 2);
+        try{
+            Marshal.WriteInt16(Buf, 0);
+            OFN O = new OFN();
+            O.lStructSize = Marshal.SizeOf<OFN>();
+            O.hwndOwner = GetForegroundWindow();
+            O.lpstrFilter = "JSON (*.json)\0*.json\0Все файлы\0*.*\0";
+            O.lpstrFile = Buf;
+            O.nMaxFile = Size;
+            O.lpstrTitle = Title;
+            O.Flags = 0x80000 | 0x1000 | 0x800 | 0x8;   // EXPLORER | FILEMUSTEXIST | PATHMUSTEXIST | NOCHANGEDIR
+            return GetOpenFileName(ref O) ? Marshal.PtrToStringUni(Buf) : null;
+        }finally{ Marshal.FreeHGlobal(Buf); }
     }
 }
 

@@ -1,322 +1,280 @@
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 
-local Value = {
-	Name = "RobloxBridge",
-	DefaultPort = 4949,
-	PingInterval = 3,
-}
+local Port = tonumber(plugin:GetSetting("Port")) or 4949
+local State = { Found = false, Place = "", Project = "", Folder = "", Creating = false, Dump = nil }
+local Busy, Probing = false, false
 
-local White = Color3.fromRGB(235, 235, 235)
-local Green = Color3.fromRGB(110, 220, 130)
-local Yellow = Color3.fromRGB(230, 180, 60)
-local Red = Color3.fromRGB(235, 90, 90)
+local Green, Yellow, Red = Color3.fromRGB(70, 170, 90), Color3.fromRGB(220, 170, 40), Color3.fromRGB(225, 80, 80)
 
-local function make(ClassName, Props, Parent)
-	local Obj = Instance.new(ClassName)
-	for Key, Val in pairs(Props) do
-		Obj[Key] = Val
-	end
-	Obj.Parent = Parent
-	return Obj
+local function Theme(Color) return settings().Studio.Theme:GetColor(Color) end
+local function make(Class, Props, Parent)
+	local O = Instance.new(Class)
+	for K, V in pairs(Props) do O[K] = V end
+	O.Parent = Parent
+	return O
 end
 
-local Toolbar = plugin:CreateToolbar(Value.Name)
-local ToggleButton = Toolbar:CreateButton(Value.Name, "Переключить окно " .. Value.Name, "")
-
-local Widget = plugin:CreateDockWidgetPluginGui(Value.Name .. "Widget", DockWidgetPluginGuiInfo.new(
-	Enum.InitialDockState.Right,
-	false, false,
-	300, 400, 250, 200
-))
-Widget.Title = Value.Name
-
--- ----------------------------------------------------------------------
--- Состояние
-
-local CurrentPort = plugin:GetSetting("Port") or Value.DefaultPort
-local IsPinging = false
-local LastPingClock = 0
-local ActionPath = nil -- куда POST-ит кнопка действия
-
-local function getServerUrl()
-	return "http://localhost:" .. tostring(CurrentPort)
+-- ===== HTTP =====
+local function Get(Path)
+	local Ok, R = pcall(HttpService.GetAsync, HttpService, "http://localhost:" .. Port .. Path)
+	if not Ok then return nil end
+	local Ok2, D = pcall(HttpService.JSONDecode, HttpService, R)
+	if Ok2 then return D end
+	return nil
 end
 
-local function getPlaceInfo()
-	return {
-		PlaceId = game.PlaceId,
-		UniverseId = game.GameId,
-	}
+local function Post(Path, Body)
+	local Ok, R = pcall(HttpService.PostAsync, HttpService, "http://localhost:" .. Port .. Path,
+		HttpService:JSONEncode(Body or {}), Enum.HttpContentType.ApplicationJson)
+	if not Ok then return nil, tostring(R) end
+	local Ok2, D = pcall(HttpService.JSONDecode, HttpService, R)
+	return Ok2 and D or {}, nil
 end
 
--- ----------------------------------------------------------------------
--- Интерфейс
+local function PlaceInfo() return { PlaceId = game.PlaceId, UniverseId = game.GameId } end
 
-local MainFrame = make("Frame", {
-	Size = UDim2.new(1, 0, 1, 0),
-	BackgroundColor3 = Color3.fromRGB(30, 30, 35),
-	BorderSizePixel = 0,
-}, Widget)
+-- ===== UI =====
+local Widget = plugin:CreateDockWidgetPluginGui("RobloxBridge",
+	DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 300, 300, 240, 160))
+Widget.Title = "RobloxBridge"
+local Toggle = plugin:CreateToolbar("RobloxBridge"):CreateButton("RobloxBridge", "Открыть панель RobloxBridge", "")
+Toggle.ClickableWhenViewportHidden = true
+Toggle.Click:Connect(function() Widget.Enabled = not Widget.Enabled end)
 
-make("TextLabel", {
-	Size = UDim2.new(1, 0, 0, 40),
-	BackgroundColor3 = Color3.fromRGB(20, 20, 24),
-	BorderSizePixel = 0,
-	Text = Value.Name,
-	TextColor3 = White,
-	Font = Enum.Font.SourceSansBold,
-	TextSize = 20,
-}, MainFrame)
+local Root = make("Frame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0,
+	BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.MainBackground) }, Widget)
+make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, Root)
+make("UIPadding", { PaddingTop = UDim.new(0, 8), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, Root)
 
-local Content = make("Frame", {
-	Size = UDim2.new(1, 0, 1, -40),
-	Position = UDim2.new(0, 0, 0, 40),
-	BackgroundTransparency = 1,
-}, MainFrame)
-
-make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, Content)
-make("UIPadding", {
-	PaddingLeft = UDim.new(0, 10),
-	PaddingRight = UDim.new(0, 10),
-	PaddingTop = UDim.new(0, 10),
-}, Content)
-
--- Статус сервера (виден всегда)
-
-local StatusRow = make("Frame", {
-	Size = UDim2.new(1, 0, 0, 18),
-	BackgroundTransparency = 1,
-	LayoutOrder = 1,
-}, Content)
-
-local StatusDot = make("Frame", {
-	Size = UDim2.fromOffset(10, 10),
-	Position = UDim2.new(0, 0, 0, 4),
-	BorderSizePixel = 0,
-}, StatusRow)
-make("UICorner", { CornerRadius = UDim.new(1, 0) }, StatusDot)
-
-local StatusText = make("TextLabel", {
-	Size = UDim2.new(1, -18, 1, 0),
-	Position = UDim2.new(0, 18, 0, 0),
-	BackgroundTransparency = 1,
-	Font = Enum.Font.SourceSans,
-	TextSize = 14,
-	TextColor3 = White,
-	TextXAlignment = Enum.TextXAlignment.Left,
-}, StatusRow)
-
-local ChangePortButton = make("TextButton", {
-	Size = UDim2.new(1, 0, 0, 16),
-	BackgroundTransparency = 1,
-	Text = "Изменить порт",
-	Font = Enum.Font.SourceSans,
-	TextSize = 12,
-	TextColor3 = Color3.fromRGB(120, 170, 255),
-	TextXAlignment = Enum.TextXAlignment.Left,
-	AutoButtonColor = false,
-	LayoutOrder = 2,
-}, Content)
-
-local PortInput = make("TextBox", {
-	Size = UDim2.new(1, 0, 0, 24),
-	BackgroundColor3 = Color3.fromRGB(45, 45, 52),
-	TextColor3 = Color3.fromRGB(255, 255, 255),
-	Font = Enum.Font.SourceSans,
-	TextSize = 14,
-	Text = tostring(CurrentPort),
-	ClearTextOnFocus = false,
-	Visible = false,
-	LayoutOrder = 3,
-}, Content)
-
--- Блок проекта (виден только когда сервер найден)
-
-local ProjectFrame = make("Frame", {
-	Size = UDim2.new(1, 0, 0, 0),
-	AutomaticSize = Enum.AutomaticSize.Y,
-	BackgroundTransparency = 1,
-	Visible = false,
-	LayoutOrder = 4,
-}, Content)
-
-make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, ProjectFrame)
-
-local InfoLabel = make("TextLabel", {
-	Size = UDim2.new(1, 0, 0, 0),
-	AutomaticSize = Enum.AutomaticSize.Y,
-	BackgroundTransparency = 1,
-	Font = Enum.Font.SourceSansBold,
-	TextSize = 14,
-	TextXAlignment = Enum.TextXAlignment.Left,
-	TextWrapped = true,
-	LayoutOrder = 1,
-}, ProjectFrame)
-
-local ActionButton = make("TextButton", {
-	Size = UDim2.new(1, 0, 0, 32),
-	BackgroundColor3 = Color3.fromRGB(46, 125, 50),
-	Font = Enum.Font.SourceSansBold,
-	TextSize = 14,
-	TextColor3 = Color3.fromRGB(255, 255, 255),
-	BorderSizePixel = 0,
-	Visible = false,
-	LayoutOrder = 2,
-}, ProjectFrame)
-
--- ----------------------------------------------------------------------
--- Отрисовка по ответу /ping (State == nil, если сервер не найден)
-
-local function setInfo(Text, Color)
-	InfoLabel.Text = Text
-	InfoLabel.TextColor3 = Color
+local function Label(Order)
+	return make("TextLabel", { LayoutOrder = Order, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top, Font = Enum.Font.SourceSans, TextSize = 14, Text = "",
+		TextColor3 = Theme(Enum.StudioStyleGuideColor.MainText) }, Root)
 end
 
-local function setAction(Text, Path)
-	ActionButton.Text = Text
-	ActionButton.Visible = true
-	ActionPath = Path
-end
+local Status, DumpLine = Label(1), Label(2)
+local Action = make("TextButton", { LayoutOrder = 3, Size = UDim2.new(1, 0, 0, 28), Visible = false, BorderSizePixel = 0,
+	Font = Enum.Font.SourceSans, TextSize = 14, Text = "",
+	BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.Button),
+	TextColor3 = Theme(Enum.StudioStyleGuideColor.ButtonText) }, Root)
+local PortLink = make("TextButton", { LayoutOrder = 4, Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1,
+	Font = Enum.Font.SourceSans, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
+	TextColor3 = Color3.fromRGB(90, 160, 255), Text = "" }, Root)
+local PortBox = make("TextBox", { LayoutOrder = 5, Size = UDim2.new(1, 0, 0, 24), Visible = false, ClearTextOnFocus = false,
+	Font = Enum.Font.SourceSans, TextSize = 14, Text = "", PlaceholderText = "Порт (1024–65535), Enter",
+	BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.InputFieldBackground),
+	TextColor3 = Theme(Enum.StudioStyleGuideColor.MainText) }, Root)
 
-local function render(State)
-	ActionButton.Visible = false
-	ActionPath = nil
+local function Render()
+	local Dim = Theme(Enum.StudioStyleGuideColor.DimmedText)
+	Action.Visible = false
+	DumpLine.Text = ""
+	PortLink.Visible = not State.Found
+	PortLink.Text = "Изменить порт (сейчас " .. Port .. ")"
+	if State.Found then PortBox.Visible = false end
 
-	if not State then
-		StatusDot.BackgroundColor3 = Red
-		StatusText.Text = ("Поиск сервера (порт %d)..."):format(CurrentPort)
-		ProjectFrame.Visible = false
+	if not State.Found then
+		Status.Text = "Поиск сервера RobloxBridge (порт " .. Port .. ")…"
+		Status.TextColor3 = Dim
 		return
 	end
 
-	StatusDot.BackgroundColor3 = Green
-	StatusText.Text = ("Подключено (порт %d)"):format(CurrentPort)
-	ProjectFrame.Visible = true
-
-	local Place = State.place
-	local Project = tostring(State.project)
-
-	if Place == "local" then
-		setInfo("⚠ Плейс не опубликован в Roblox. File → Publish to Roblox (можно оставить приватным).", Yellow)
-	elseif Place == "noProject" then
-		if State.creating then
-			setInfo("Выберите папку в окне RobloxBridge...", Yellow)
+	local P, Dump = State.Place, State.Dump
+	if P == "noDump" then
+		Status.Text = "✖ Нужен файл дампа API. В окне RobloxBridge нажмите «Скачать на GitHub», скачайте файл и выберите его."
+		Status.TextColor3 = Red
+	elseif P == "local" then
+		Status.Text = "Плейс не опубликован. File → Publish to Roblox (можно приватным)."
+		Status.TextColor3 = Yellow
+	elseif P == "noProject" then
+		if State.Creating then
+			Status.Text = "Выберите папку в окне RobloxBridge…"
+			Status.TextColor3 = Dim
 		else
-			setInfo("Для этой игры нет проекта.", White)
-			setAction("Создать проект для этой игры", "/project/create")
+			Status.Text = "Проект для этой игры не открыт."
+			Status.TextColor3 = Dim
+			Action.Text = "Создать проект для этой игры"
+			Action.Visible = true
 		end
-	elseif Place == "otherGame" then
-		setInfo(("⛔ В приложении открыт проект «%s» другой игры. Закройте его в приложении."):format(Project), Red)
-	elseif Place == "newPlace" then
-		setInfo(("Проект «%s». Этого плейса в нём ещё нет."):format(Project), White)
-		setAction("Добавить этот плейс в проект", "/place/add")
-	elseif Place == "ready" then
-		setInfo(("✔ Проект «%s», папка плейса: Places/%s"):format(Project, tostring(State.folder)), Green)
+	elseif P == "otherGame" then
+		Status.Text = "Открыт проект «" .. State.Project .. "», но это другая игра. Закройте или смените проект в приложении."
+		Status.TextColor3 = Red
+	elseif P == "newPlace" then
+		Status.Text = "Проект «" .. State.Project .. "»: этого плейса в нём ещё нет."
+		Status.TextColor3 = Yellow
+		Action.Text = "Добавить этот плейс в проект"
+		Action.Visible = true
+	elseif P == "ready" then
+		Status.Text = "✔ Проект «" .. State.Project .. "», папка плейса: Places/" .. State.Folder
+		Status.TextColor3 = Green
+	end
+
+	if Probing and State.ProbeText then
+		DumpLine.Text = State.ProbeText
+		DumpLine.TextColor3 = Dim
+	elseif State.ProbeError then
+		DumpLine.Text = State.ProbeError
+		DumpLine.TextColor3 = Red
+	elseif Dump then
+		local Marks = { ok = "✔ ", checking = "… " }
+		local Colors = { ok = Green, checking = Dim, missing = Red, broken = Red }
+		DumpLine.Text = (Marks[Dump.state] or "⚠ ") .. tostring(Dump.message)
+			.. "\nStudio: " .. tostring(Dump.studio)
+			.. "\nДамп принят для: " .. tostring(Dump.dumpStudio)
+			.. "\nХеш файла: " .. tostring(Dump.hash)
+			.. ", классов " .. tostring(Dump.classes) .. ", свойств " .. tostring(Dump.props)
+		DumpLine.TextColor3 = Colors[Dump.state] or Yellow
 	end
 end
 
-render(nil)
+-- ===== Проверка дампа в этой Studio (безопасная) =====
+-- Только короткий список. Сервисы не создаём, берём уже существующие (FindService).
+local ProbeClasses = {
+	"Part", "MeshPart", "WedgePart", "SpawnLocation", "Model", "Folder", "Attachment", "Weld", "WeldConstraint",
+	"Script", "LocalScript", "ModuleScript", "PointLight", "SpotLight", "Sound", "Decal", "Texture",
+	"ScreenGui", "Frame", "TextLabel", "TextButton", "ImageLabel", "UICorner", "UIListLayout",
+	"BoolValue", "StringValue", "NumberValue", "ObjectValue",
+}
+local ProbeServices = { "Workspace", "Lighting", "SoundService", "ReplicatedStorage" }
+local ProbeCooldown, LastProbe = 60, -1000
 
--- ----------------------------------------------------------------------
--- Пинг
+local function Probe()
+	if Probing or os.clock() - LastProbe < ProbeCooldown then return end
+	Probing = true
+	LastProbe = os.clock()
 
-local function pingServer()
-	if IsPinging then return end
-	IsPinging = true
-
-	task.spawn(function()
-		local Url = ("%s/ping?place=%d&universe=%d"):format(getServerUrl(), game.PlaceId, game.GameId)
-
-		local Ok, Body = pcall(function()
-			return HttpService:GetAsync(Url, true)
-		end)
-
-		local State = nil
-		if Ok then
-			local DecodeOk, Decoded = pcall(function()
-				return HttpService:JSONDecode(Body)
-			end)
-
-			if DecodeOk and type(Decoded) == "table" then
-				State = Decoded
-			end
-		end
-
-		render(State)
-		IsPinging = false
-	end)
-end
-
-RunService.Heartbeat:Connect(function()
-	if not Widget.Enabled then return end
-
-	local Now = os.clock()
-	if Now - LastPingClock >= Value.PingInterval then
-		LastPingClock = Now
-		pingServer()
+	-- Если прошлая проверка не закончилась (Studio упала), пропускаем и сбрасываем флаг
+	if plugin:GetSetting("ProbeBusy") then
+		Post("/dump/probe", { Checked = 0, Missing = 0, Classes = 0, Samples = {}, Skipped = true })
+		plugin:SetSetting("ProbeBusy", nil)
+		State.ProbeText = nil
+		Probing = false
+		Render()
+		return
 	end
-end)
-
--- ----------------------------------------------------------------------
--- Порт
-
-ChangePortButton.MouseButton1Click:Connect(function()
-	PortInput.Visible = not PortInput.Visible
-end)
-
-PortInput.FocusLost:Connect(function()
-	local Number = tonumber(PortInput.Text)
-
-	if Number and Number >= 1 and Number <= 65535 then
-		CurrentPort = math.floor(Number)
-		PortInput.Text = tostring(CurrentPort)
-		plugin:SetSetting("Port", CurrentPort)
-
-		render(nil)
-		LastPingClock = 0
-	else
-		PortInput.Text = tostring(CurrentPort)
-	end
-end)
-
--- ----------------------------------------------------------------------
--- Кнопка действия (создать проект / добавить плейс)
-
-ActionButton.MouseButton1Click:Connect(function()
-	local Path = ActionPath
-	if not Path then return end
-
-	ActionButton.Visible = false
-	InfoLabel.Text = "Отправляю запрос..."
 
 	task.spawn(function()
 		local Ok, Err = pcall(function()
-			HttpService:PostAsync(
-				getServerUrl() .. Path,
-				HttpService:JSONEncode(getPlaceInfo()),
-				Enum.HttpContentType.ApplicationJson
-			)
+			local Schema = Get("/schema")
+			if not Schema then return end
+			plugin:SetSetting("ProbeBusy", true)
+
+			local Total = #ProbeClasses + #ProbeServices
+			local Done, Checked, Missing, Samples = 0, 0, 0, {}
+			local function Miss(S)
+				Missing += 1
+				if #Samples < 30 then table.insert(Samples, S) end
+			end
+			local function Step(Name)
+				Done += 1
+				State.ProbeText = "Проверка дампа: " .. Done .. "/" .. Total .. " (" .. Name .. ")"
+				Render()
+				task.wait()
+			end
+			local function CheckProps(Inst, ClassName, C)
+				for Prop in pairs(C.Props) do
+					Checked += 1
+					local Ok3, E = pcall(function() return Inst[Prop] end)
+					if not Ok3 and string.find(tostring(E), "is not a valid member", 1, true) then
+						Miss(ClassName .. "." .. Prop)
+					end
+				end
+			end
+
+			for _, ClassName in ipairs(ProbeClasses) do
+				local C = Schema.Classes[ClassName]
+				if not C then
+					Miss(ClassName)
+				else
+					local Ok2, I = pcall(Instance.new, ClassName)
+					if Ok2 then
+						CheckProps(I, ClassName, C)
+						I:Destroy()
+					else
+						Miss(ClassName)
+					end
+				end
+				Step(ClassName)
+			end
+
+			for _, ServiceName in ipairs(ProbeServices) do
+				local C = Schema.Classes[ServiceName]
+				local Svc = game:FindService(ServiceName)
+				if C and Svc then CheckProps(Svc, ServiceName, C) end
+				Step(ServiceName)
+			end
+
+			plugin:SetSetting("ProbeBusy", nil)
+			Post("/dump/probe", { Checked = Checked, Missing = Missing, Classes = Total, Samples = Samples })
+
+			State.ProbeText = nil
+			State.ProbeError = nil
 		end)
-
 		if not Ok then
-			setInfo("Ошибка: " .. tostring(Err), Red)
+			plugin:SetSetting("ProbeBusy", nil)
+			State.ProbeText = nil
+			State.ProbeError = "✖ Проверка дампа не удалась: " .. tostring(Err)
+			warn("RobloxBridge: проверка дампа не удалась: " .. tostring(Err))
 		end
-
-		LastPingClock = 0 -- сразу обновить состояние
+		Probing = false
+		Render()
 	end)
+end
+
+-- ===== Пинг =====
+local function Tick()
+	if Busy then return end
+	Busy = true
+	local Q = "?place=" .. game.PlaceId .. "&universe=" .. game.GameId .. "&studio=" .. HttpService:UrlEncode(version())
+	local D = Get("/ping" .. Q)
+	if D then
+		State.Found = true
+		State.Place = D.place or ""
+		State.Project = D.project or ""
+		State.Folder = D.folder or ""
+		State.Creating = D.creating == true
+		State.Dump = D.dump
+	else
+		State.Found = false
+	end
+	Render()
+	Busy = false
+	if D and D.dump and D.dump.probe then Probe() end
+end
+
+Action.MouseButton1Click:Connect(function()
+	if State.Place == "noProject" then
+		Post("/project/create", PlaceInfo())
+	elseif State.Place == "newPlace" then
+		Post("/place/add", PlaceInfo())
+	end
+	Tick()
 end)
 
--- ----------------------------------------------------------------------
-
-ToggleButton.Click:Connect(function()
-	Widget.Enabled = not Widget.Enabled
+PortLink.MouseButton1Click:Connect(function()
+	PortBox.Visible = not PortBox.Visible
+	PortBox.Text = tostring(Port)
 end)
-
-Widget:GetPropertyChangedSignal("Enabled"):Connect(function()
-	ToggleButton:SetActive(Widget.Enabled)
-
-	if Widget.Enabled then
-		LastPingClock = 0 -- пинг сразу при открытии окна
+PortBox.FocusLost:Connect(function(Enter)
+	if not Enter then return end
+	local N = tonumber(PortBox.Text)
+	if N and N >= 1024 and N <= 65535 then
+		Port = math.floor(N)
+		plugin:SetSetting("Port", Port)
+		PortBox.Visible = false
+		Tick()
 	end
 end)
+
+local Last = 0
+RunService.Heartbeat:Connect(function()
+	if os.clock() - Last >= 3 then
+		Last = os.clock()
+		task.spawn(Tick)
+	end
+end)
+
+Render()
+task.spawn(Tick)
