@@ -1,0 +1,13 @@
+Part "Ball" Size=3,3,3 Anchored CFrame=-41,2,45 Color=#FFB84D Material=SmoothPlastic Shape=Ball
+Part "Block" Size=3,3,3 Anchored CFrame=-46,2,45 Color=#FF6B6B Material=SmoothPlastic
+CornerWedgePart "Corner Wedge" Size=3,3,3 Anchored CFrame=-26,2,45 Color=#A06BFF Material=SmoothPlastic
+Part "Cylinder" Size=3,3,3 Anchored CFrame=-36,2,45 Color=#6BE675 Material=SmoothPlastic Shape=Cylinder
+Part "Floor" Size=40,0.5,14 Anchored CFrame=-30,0.25,45 Color=#33384A Material=SmoothPlastic
+Part "Tagged Cube" #"Pickup" #"Shiny" Size=2,2,2 Anchored CFrame=-14,1.5,45 Color=#FFD700 Material=Neon $Coins=5 $Owner="nobody" $Respawn $Speed=1.5
+Part "Text Board" Size=24,6,0.3 Anchored CFrame=-30,3.5,51 Color=#22222B Material=SmoothPlastic {
+    SurfaceGui "Gui" {
+        TextLabel "Label" Size=1,0,1,0 BackgroundTransparency=1 Text="Привет, мир!\nСтрока 2: \"кавычки\" и \\ слеш" TextColor3=#FFE9B0 TextScaled TextWrapped
+    }
+}
+TrussPart "Truss" Size=2,6,2 Anchored CFrame=-21,3.5,45 Color=#AAAAAA Material=Metal
+WedgePart "Wedge" Size=3,3,3 Anchored CFrame=-31,2,45 Color=#4DC3FF Material=SmoothPlastic

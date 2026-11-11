@@ -20,7 +20,12 @@
   ],
   "AutoSplit": 0,
   "Splits": {
-    "Workspace/Classic House/House/FirstFloor": "Scene/Workspace/Classic House/House/FirstFloor.bridge",
-    "Workspace/Classic House/House/Roof": "Scene/Workspace/Classic House/House/Roof.bridge"
+    "Workspace/Classic House": "Scene/Workspace/Classic House.bridge",
+    "Workspace/Test Lobby/Rubber Duck": "Scene/Workspace/Test Lobby/Rubber Duck.bridge",
+    "Workspace/Test Lobby/Materials Station": "Scene/Workspace/Test Lobby/Materials Station.bridge",
+    "Workspace/Test Lobby/Light Station": "Scene/Workspace/Test Lobby/Light Station.bridge",
+    "Workspace/Test Lobby/Shapes Station": "Scene/Workspace/Test Lobby/Shapes Station.bridge",
+    "Workspace/Test Lobby/Spiral Stairs": "Scene/Workspace/Test Lobby/Spiral Stairs.bridge",
+    "Workspace/Test Lobby/Welcome Sign": "Scene/Workspace/Test Lobby/Welcome Sign.bridge"
   }
 }

@@ -1,0 +1,18 @@
+Part "Pole" Size=14.5,2,2 Anchored CFrame=0,7.25,60|0,0,90 Color=#555566 Material=Metal Shape=Cylinder
+Part "Step 1" Size=3.2,0.6,6 Anchored CFrame=0,1,67 Color=#FF4B4B Material=SmoothPlastic
+Part "Step 10" Size=3.2,0.6,6 Anchored CFrame=-7,11.8,60|0,-90,0 Color=#8A5BFF Material=SmoothPlastic
+Part "Step 11" Size=3.2,0.6,6 Anchored CFrame=-6.062,13,63.5|0,-60,0 Color=#C45BFF Material=SmoothPlastic
+Part "Step 12" Size=3.2,0.6,6 Anchored CFrame=-3.5,14.2,66.062|0,-30,0 Color=#FF5BB5 Material=SmoothPlastic
+Part "Step 2" Size=3.2,0.6,6 Anchored CFrame=3.5,2.2,66.062|0,30,0 Color=#FF8A3D Material=SmoothPlastic
+Part "Step 3" Size=3.2,0.6,6 Anchored CFrame=6.062,3.4,63.5|0,60,0 Color=#FFC83D Material=SmoothPlastic
+Part "Step 4" Size=3.2,0.6,6 Anchored CFrame=7,4.6,60|0,90,0 Color=#E8E84A Material=SmoothPlastic
+Part "Step 5" Size=3.2,0.6,6 Anchored CFrame=6.062,5.8,56.5|-180,60,-180 Color=#9BE04A Material=SmoothPlastic
+Part "Step 6" Size=3.2,0.6,6 Anchored CFrame=3.5,7,53.938|-180,30,-180 Color=#4BD16B Material=SmoothPlastic
+Part "Step 7" Size=3.2,0.6,6 Anchored CFrame=0,8.2,53|-180,0,-180 Color=#3DD1C4 Material=SmoothPlastic
+Part "Step 8" Size=3.2,0.6,6 Anchored CFrame=-3.5,9.4,53.938|-180,-30,-180 Color=#3DA5FF Material=SmoothPlastic
+Part "Step 9" Size=3.2,0.6,6 Anchored CFrame=-6.062,10.6,56.5|-180,-60,-180 Color=#5B6BFF Material=SmoothPlastic
+Part "Top" Size=0.6,9,9 Anchored CFrame=0,14.8,60|0,0,90 Color=#FFF1D6 Material=SmoothPlastic Shape=Cylinder
+Part "Trophy" Size=2,2,2 Anchored CFrame=0,17,60 Color=#FFD700 Material=Neon Shape=Ball $Reward=100 {
+    PointLight "Glow" Color=#FFD700 Range=20
+    Sparkles "Sparkles" Color=#1C492A80 SparkleColor=#FFE680
+}

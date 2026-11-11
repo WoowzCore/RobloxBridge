@@ -43,6 +43,7 @@ public static class Bootstrap{
             
             Dump.Log = Text => __EnqueueLog(Text, "Info");
             Sync.Log        = __EnqueueLog;
+            Sync.Report = D => __Post("SyncResult", D);
             Sync.ProjectDir = () => Project.Current?.Dir;
             Dump.Changed = () => __Post("DumpState", Dump.Snapshot());
             Dump.Open();
@@ -91,7 +92,11 @@ public static class Bootstrap{
 
     private static void __OnWebMessage(string Message){
         try{
-            using JsonDocument Doc = JsonDocument.Parse(Message);
+            string Json = Message;
+            using(JsonDocument Probe = JsonDocument.Parse(Message)){
+                if(Probe.RootElement.ValueKind == JsonValueKind.String){ Json = Probe.RootElement.GetString() ?? ""; }
+            }
+            using JsonDocument Doc = JsonDocument.Parse(Json);
             string Type = Doc.RootElement.GetProperty("Type").GetString() ?? "";
 
             switch(Type){
@@ -129,6 +134,14 @@ public static class Bootstrap{
 
                 case "PickDump": __PickDump(); break;
                 case "OpenDumpPage": Process.Start(new ProcessStartInfo(Dump.GitHubUrl){ UseShellExecute = true }); break;
+                
+                case "SyncCmd":{
+                    string Cmd = Doc.RootElement.GetProperty("Data").GetProperty("Cmd").GetString() ?? "";
+                    if(Cmd != "pull" && Cmd != "preview" && Cmd != "apply" && Cmd != "undo"){ break; }
+                    Live.Send(Cmd);
+                    __EnqueueLog($"Команда плагину: {Cmd} (дойдёт за ~3 с)", "Info");
+                    break;
+                }
                 
                 default:
                     WL.Logger.Warn($"Получено неизвестное сообщение от Web, Тип: {Type}");
@@ -379,13 +392,16 @@ private static (int Code, string Body) __Route(HttpListenerRequest Request){
         string?        Folder = null;
         P?.Data.Places.TryGetValue(PlaceId.ToString(), out Folder);
 
+        string PlaceState = Dump.Blocking ? "noDump" : Project.CheckPlace(PlaceId, UniverseId);
+
         return (200, JsonSerializer.Serialize(new{
             status   = "ok",
             project  = P?.Data.Name,
             creating = __Creating,
-            place    = Dump.Blocking ? "noDump" : Project.CheckPlace(PlaceId, UniverseId),
+            place    = PlaceState,
             folder   = Folder,
-            dump     = Dump.PingInfo()
+            dump     = Dump.PingInfo(),
+            cmd      = PlaceState == "ready" ? Live.TakeCommand() : null
         }));
     }
 
@@ -810,7 +826,8 @@ public static class Splitter{
         List<string> Lines = ["Вынесено сейчас:"];
         foreach(var S in Place.Splits.OrderBy(X => X.Key, StringComparer.Ordinal)){ Lines.Add($"  {S.Key} → {S.Value}"); }
         if(Place.Splits.Count == 0){ Lines.Add("  (ничего)"); }
-        return new SyncReply{ Text = Text, Lines = [], Body = new{ status = "ok", text = Text, lines = Lines } };
+        bool Again = !On && Place.Splits.ContainsKey(At);
+        return new SyncReply{ Text = Text, Lines = [], Body = new{ status = "ok", text = Text, lines = Lines, warn = Again } };
     }
 
     // Те же правила путей, что в Diff: сортировка (имя, класс), одинаковые братья ~2, ~3
@@ -835,10 +852,11 @@ public static class Sync{
     private static          JsonObject?             __Acc;
     private static          bool                    __Dbg;
     private static string __Cut(string S){ return S.Length > 300 ? S[..300] + "…" : S; }
+    public static Action<JsonNode>? Report;
 
     // Возвращает true, если путь обработан здесь
     public static bool TryHandle(string Route, HttpListenerRequest Req, HttpListenerResponse Res){
-        if(Route != "/config" && Route != "/pull" && Route != "/push" && Route != "/note" && Route != "/split" && Route != "/unsplit"){ return false; }
+        if(Route != "/config" && Route != "/pull" && Route != "/push" && Route != "/note" && Route != "/split" && Route != "/unsplit" && Route != "/settings" && Route != "/report"){ return false; }
         __Dbg = false;
         try{
             if(Dump.Blocking){ Reply(Res, 409, new{ error = "Нет файла Full-API-Dump: работа заблокирована" }); return true; }
@@ -859,10 +877,28 @@ public static class Sync{
                 Reply(Res, 200, new{ status = "ok" });
                 return true;
             }
+            
+            if(Route == "/report"){
+                Report?.Invoke(JsonNode.Parse(Body) ?? new JsonObject());
+                Reply(Res, 200, new{ status = "ok" });
+                return true;
+            }
 
             __Resolve(Req, out string PlaceDir, out PlaceData Place);
             if(Route == "/config"){
                 Reply(Res, 200, new{ services = Place.Services, ignore = Place.Ignore, splits = Place.Splits });
+                return true;
+            }
+            
+            if(Route == "/settings"){
+                lock(__Lock){
+                    string Text = "";
+                    if(Req.HttpMethod == "POST"){
+                        Text = __SaveSettings(PlaceDir, Place, Body);
+                        Log?.Invoke(Text, "Info");
+                    }
+                    Reply(Res, 200, __SettingsView(PlaceDir, Place, Text));
+                }
                 return true;
             }
             
@@ -896,6 +932,53 @@ public static class Sync{
         return true;
     }
 
+    private static List<string> __Lines(JsonNode? N){
+        List<string> R = [];
+        if(N is JsonArray A){
+            foreach(JsonNode? X in A){
+                string S = ((string?)X ?? "").Trim();
+                if(S.Length > 0 && !R.Contains(S)){ R.Add(S); }
+            }
+        }
+        return R;
+    }
+
+    private static string __SaveSettings(string PlaceDir, PlaceData Place, string Body){
+        JsonNode? J = JsonNode.Parse(Body);
+        List<string> Changes = [];
+
+        if(J?["autoSplit"] != null){
+            int V = (int?)J["autoSplit"] ?? -1;
+            if(V < 0 || V > 100000){ throw new InvalidOperationException("AutoSplit: нужно целое число от 0"); }
+            if(V != Place.AutoSplit){ Changes.Add($"AutoSplit {Place.AutoSplit} → {V}"); Place.AutoSplit = V; }
+        }
+        if(J?["services"] != null){
+            List<string> S = __Lines(J["services"]);
+            if(S.Count == 0){ throw new InvalidOperationException("Services не может быть пустым"); }
+            if(!S.SequenceEqual(Place.Services)){ Changes.Add($"Services: {Place.Services.Count} → {S.Count}"); Place.Services = S; }
+        }
+        if(J?["ignore"] != null){
+            List<string> I = __Lines(J["ignore"]);
+            if(!I.SequenceEqual(Place.Ignore)){ Changes.Add($"Ignore: {Place.Ignore.Count} → {I.Count}"); Place.Ignore = I; }
+        }
+
+        if(Changes.Count == 0){ return "Настройки не изменились"; }
+        File.WriteAllText(Path.Combine(PlaceDir, "place.json"), JsonSerializer.Serialize(Place, Pull.Json));
+        return "Настройки сохранены: " + string.Join("; ", Changes);
+    }
+
+    private static object __SettingsView(string PlaceDir, PlaceData Place, string Text){
+        var Splits = Place.Splits.OrderBy(S => S.Key, StringComparer.Ordinal).Select(S => {
+            string F = Path.GetFullPath(Path.Combine(PlaceDir, S.Value));
+            bool Ex = File.Exists(F);
+            return new{ path = S.Key, file = S.Value, exists = Ex, lines = Ex ? File.ReadLines(F).Count() : 0 };
+        }).ToList();
+        return new{
+            status = "ok", text = Text, placeId = Place.PlaceId, created = Place.Created,
+            autoSplit = Place.AutoSplit, services = Place.Services, ignore = Place.Ignore, splits = Splits
+        };
+    }
+    
     public static void Reply(HttpListenerResponse Res, int Code, object Body){
         byte[] B = JsonSerializer.SerializeToUtf8Bytes(Body);
         if(__Dbg){ Log?.Invoke($"[debug] ← {Code}, {B.Length} байт: {__Cut(Encoding.UTF8.GetString(B, 0, Math.Min(B.Length, 300)))}", "Info"); }
@@ -966,6 +1049,12 @@ public static class Sync{
     }
 }
 
+public static class Live{
+    private static readonly ConcurrentQueue<string> __Cmds = [];
+
+    public static void Send(string Cmd){ __Cmds.Enqueue(Cmd); }
+    public static string? TakeCommand(){ return __Cmds.TryDequeue(out string? C) ? C : null; }
+}
 
     // ----------------------------------------------------------------------
     // Отправка в Web
@@ -1084,7 +1173,7 @@ public sealed class PlaceData{
     public List<string> Services { get; set; } = [..Bridge.DefaultServices];
     public List<string> Ignore   { get; set; } = [..Bridge.DefaultIgnore];
     
-    public int AutoSplit { get; set; } = 0;   // 0 = автоматический вынос выключен
+    public int AutoSplit { get; set; } = 500;   // 0 = автоматический вынос выключен
 
     /// Путь объекта -> файл .bridge (относительно папки плейса). Заполняется и вручную, и автоматически.
     public Dictionary<string, string> Splits { get; set; } = [];
@@ -1350,6 +1439,9 @@ public static class Dump{
     public const string GitHubUrl = "https://github.com/MaximumADHD/Roblox-Client-Tracker/blob/roblox/Full-API-Dump.json";
 
     static bool __BlockOnOutdated = false;   // true — при устаревшем дампе тоже блокировать работу
+    
+    static readonly HashSet<string> __Extra   = ["Size", "Color", "Shape"];   // CanSave=false в дампе, но реально нужны
+    const           string          SchemaRev = "2";   // увеличивайте, когда меняете правила построения схемы: плагин перезагрузит схему
 
     public static string State = "missing";  // missing | broken | checking | ok | outdated | newer
     public static string Message = "Файл дампа API не выбран";
@@ -1380,7 +1472,7 @@ public static class Dump{
     public static object PingInfo(){
         return new{
             state = State, message = Message, blocking = Blocking, probe = NeedProbe,
-            studio = Studio, dumpStudio = Settings.DumpStudio, hash = __Hash, classes = Classes, props = Props
+            studio = Studio, dumpStudio = Settings.DumpStudio, hash = __Hash + "." + SchemaRev, classes = Classes, props = Props
         };
     }
 
@@ -1423,6 +1515,9 @@ public static class Dump{
                 if(DiffText != ""){ Log(DiffText); }
             }
             __Hash = Hash; SchemaJson = NewSchema; Classes = ClassCount; Props = PropCount;
+            Log("Схема: Size " + (NewSchema.Contains("\"Size\":\"Vector3\"") ? "есть" : "НЕТ")
+                               + ", Color " + (NewSchema.Contains("\"Color\":\"Color3\"") ? "есть" : "НЕТ")
+                               + ", Shape " + (NewSchema.Contains("\"Shape\":\"Enum:") ? "есть" : "НЕТ"));
             Evaluate();
         }catch(Exception Ex){
             __Set("broken", "Файл не подходит: " + Ex.Message);
@@ -1549,7 +1644,8 @@ public static class Dump{
                     if(PName == "Parent"){ continue; }
                     HashSet<string> MTags = __Tags(M);
                     if(MTags.Contains("ReadOnly") || MTags.Contains("NotScriptable") || MTags.Contains("Deprecated")){ continue; }
-                    if(!M.TryGetProperty("Serialization", out JsonElement Ser) || !Ser.TryGetProperty("CanSave", out JsonElement CanSave) || !CanSave.GetBoolean()){ continue; }
+                    bool Saves = M.TryGetProperty("Serialization", out JsonElement Ser) && Ser.TryGetProperty("CanSave", out JsonElement CanSave) && CanSave.GetBoolean();
+                    if(!Saves && !__Extra.Contains(PName)){ continue; }
                     if(!__SecOk(M)){ continue; }
                     JsonElement VT = M.GetProperty("ValueType");
                     string Cat = VT.GetProperty("Category").GetString(), VName = VT.GetProperty("Name").GetString();

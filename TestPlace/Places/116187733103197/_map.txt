@@ -23,8 +23,25 @@ Teams "Teams"  [Scene/Teams.bridge]
 Workspace "Workspace"  [Scene/Workspace.bridge]
   Part "Baseplate"
     Texture "Texture"
-  Model "Classic House"
-    Model "House"  (+1598)
+  Model "Campsite"
+    Model "Campfire"  (+13)
+    Model "Lantern"  (+4)
+    Part "Log Seat"
+    Model "Mushroom 1"  (+4)
+    Model "Mushroom 2"  (+4)
+    Model "Robot"  (+19)
+    Model "Sign"  (+5)
   SpawnLocation "SpawnLocation"
     Decal "Decal"
   Terrain "Terrain"
+  Model "Test Lobby"
+    Folder "Config Values"  (+6)
+    Model "Edge Cases"  (+5)
+    Model "Light Station"  [Scene/Workspace/Test Lobby/Light Station.bridge]  (+16)
+    Model "Materials Station"  [Scene/Workspace/Test Lobby/Materials Station.bridge]  (+14)
+    Part "Plaza"
+    Part "Plaza Ring"
+    Model "Rubber Duck"  [Scene/Workspace/Test Lobby/Rubber Duck.bridge]  (+15)
+    Model "Shapes Station"  [Scene/Workspace/Test Lobby/Shapes Station.bridge]  (+11)
+    Model "Spiral Stairs"  [Scene/Workspace/Test Lobby/Spiral Stairs.bridge]  (+17)
+    Model "Welcome Sign"  [Scene/Workspace/Test Lobby/Welcome Sign.bridge]  (+5)

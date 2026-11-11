@@ -289,12 +289,31 @@ do
 		return "?place=" .. game.PlaceId .. "&universe=" .. game.GameId .. "&studio=" .. HttpService:UrlEncode(version())
 	end
 
+	local DebugOn = plugin:GetSetting("Debug") == true
+	local function Cut(S)
+		S = tostring(S)
+		if #S > 300 then return string.sub(S, 1, 300) .. "…" end
+		return S
+	end
+
 	-- Возвращает (данные, ошибка). Ошибки сервера (400/409/500) приходят с текстом.
 	local function Call(Path, Body)
 		local Req = { Url = Base() .. Path, Method = Body and "POST" or "GET", Headers = { ["Content-Type"] = "application/json" } }
-		if Body then Req.Body = HttpService:JSONEncode(Body) end
+		if DebugOn then Req.Headers["X-Bridge-Debug"] = "1" end
+		local Json
+		if Body then Json = HttpService:JSONEncode(Body); Req.Body = Json end
+		local T0 = os.clock()
+		if DebugOn then
+			print("[Bridge] → " .. Req.Method .. " " .. Path .. " (" .. (Json and #Json or 0) .. " байт)" .. (Json and ("\n" .. Cut(Json)) or ""))
+		end
 		local Ok, R = pcall(HttpService.RequestAsync, HttpService, Req)
-		if not Ok then return nil, "нет связи с приложением: " .. tostring(R) end
+		if not Ok then
+			if DebugOn then print("[Bridge] ← ошибка: " .. tostring(R)) end
+			return nil, "нет связи с приложением: " .. tostring(R)
+		end
+		if DebugOn then
+			print("[Bridge] ← " .. R.StatusCode .. ", " .. #R.Body .. " байт, " .. math.floor((os.clock() - T0) * 1000) .. " мс\n" .. Cut(R.Body))
+		end
 		local Ok2, D = pcall(HttpService.JSONDecode, HttpService, R.Body)
 		if not Ok2 then D = nil end
 		if not R.Success then return D, (D and D.error) or ("HTTP " .. R.StatusCode) end
@@ -806,7 +825,7 @@ do
 		TextYAlignment = Enum.TextYAlignment.Top, Font = Enum.Font.SourceSans, TextSize = 14, Text = "",
 		TextColor3 = Theme(Enum.StudioStyleGuideColor.MainText), Visible = false }, Root)
 
-	local LinesFrame = make("ScrollingFrame", { LayoutOrder = 12, Size = UDim2.new(1, 0, 0, 200), BorderSizePixel = 0,
+	local LinesFrame = make("ScrollingFrame", { LayoutOrder = 14, Size = UDim2.new(1, 0, 0, 200), BorderSizePixel = 0,
 		CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 8, Visible = false,
 		BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.InputFieldBackground) }, Root)
 	make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, LinesFrame)
@@ -924,10 +943,245 @@ do
 		Run("Применяю", DoApply)
 	end)
 
+	-- ===== Вынос объектов в отдельные файлы =====
+	local Selection = game:GetService("Selection")
+
+	-- Путь объекта по тем же правилам, что на сервере (~2 у одинаковых братьев, %2F)
+	local function PathOf(Inst)
+		if Inst.Parent == game then return Inst.Name end
+		if not Inst.Parent or Inst:IsA("PartOperation") then return nil end
+		local PP = PathOf(Inst.Parent)
+		if not PP then return nil end
+		for _, K in ipairs(Kids(Inst.Parent, PP)) do
+			if K[2] == Inst then return K[1] end
+		end
+		return nil
+	end
+
+	local function SplitAction(On)
+		local Cfg = Prepare()
+		local Sel = Selection:Get()
+		if #Sel ~= 1 then error("Выберите в Explorer один объект", 0) end
+		local Path = PathOf(Sel[1])
+		if not Path then error("Не удалось определить путь выбранного объекта", 0) end
+		local Root, Found = string.match(Path, "^[^/]+"), false
+		for _, S in ipairs(Cfg.services or {}) do
+			if S == Root then Found = true end
+		end
+		if not Found then error("Сервис " .. Root .. " не входит в Services", 0) end
+		local D, E = Call((On and "/split" or "/unsplit") .. Q(), { path = Path })
+		if E then error(E, 0) end
+		SetPending(nil)
+		SetInfo(D.text or "Готово", D.warn and Yellow or Green)
+		ShowLines(D.lines or {})
+	end
+
+	local Row2 = make("Frame", { LayoutOrder = 12, Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1, Visible = false }, Root)
+	make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, Row2)
+	local function Btn2(Order, Text)
+		return make("TextButton", { LayoutOrder = Order, Size = UDim2.new(0.5, -2, 1, 0), BorderSizePixel = 0,
+			Font = Enum.Font.SourceSans, TextSize = 13, TextWrapped = true, Text = Text,
+			BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.Button),
+			TextColor3 = Theme(Enum.StudioStyleGuideColor.ButtonText) }, Row2)
+	end
+	local SplitBtn = Btn2(1, "Вынести выделенный в файл")
+	local UnsplitBtn = Btn2(2, "Вернуть в общий файл")
+	SplitBtn.MouseButton1Click:Connect(function() Run("Вынос", function() SplitAction(true) end) end)
+	UnsplitBtn.MouseButton1Click:Connect(function() Run("Возврат", function() SplitAction(false) end) end)
+
+	-- ===== Отладка запросов =====
+	local DebugBtn = make("TextButton", { LayoutOrder = 13, Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1,
+		Font = Enum.Font.SourceSans, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = Color3.fromRGB(90, 160, 255), Text = "", Visible = false }, Root)
+	local function RefreshDebug()
+		DebugBtn.Text = "Отладка запросов: " .. (DebugOn and "вкл (Output плагина + лог приложения)" or "выкл")
+	end
+	DebugBtn.MouseButton1Click:Connect(function()
+		DebugOn = not DebugOn
+		plugin:SetSetting("Debug", DebugOn)
+		RefreshDebug()
+	end)
+	RefreshDebug()
+
 	task.spawn(function()
 		while true do
 			local Show = State.Found and State.Place == "ready"
-			Row.Visible, InfoLabel.Visible, LinesFrame.Visible = Show, Show, Show
+			Row.Visible, Row2.Visible, InfoLabel.Visible, LinesFrame.Visible = Show, Show, Show, Show
+			DebugBtn.Visible = State.Found
+			task.wait(0.5)
+		end
+	end)
+	
+		-- ===== Окно настроек плейса =====
+	local SW = plugin:CreateDockWidgetPluginGui("RobloxBridgeSettings",
+		DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, true, 380, 560, 300, 300))
+	SW.Title = "RobloxBridge: настройки плейса"
+
+	local SRoot = make("ScrollingFrame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0, CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 8,
+		BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.MainBackground) }, SW)
+	make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, SRoot)
+	make("UIPadding", { PaddingTop = UDim.new(0, 8), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 12), PaddingBottom = UDim.new(0, 8) }, SRoot)
+
+	local function SText(Order, Text, Color, Size)
+		return make("TextLabel", { LayoutOrder = Order, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top, Font = Enum.Font.SourceSans, TextSize = Size or 13, Text = Text,
+			TextColor3 = Color or Theme(Enum.StudioStyleGuideColor.MainText) }, SRoot)
+	end
+	local function SBox(Order, Height, Multi)
+		return make("TextBox", { LayoutOrder = Order, Size = UDim2.new(1, 0, 0, Height), ClearTextOnFocus = false,
+			MultiLine = Multi, TextWrapped = Multi, Font = Enum.Font.Code, TextSize = 13, BorderSizePixel = 0,
+			TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Text = "",
+			BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.InputFieldBackground),
+			TextColor3 = Theme(Enum.StudioStyleGuideColor.MainText) }, SRoot)
+	end
+	local function SBtn(Order, Text)
+		return make("TextButton", { LayoutOrder = Order, Size = UDim2.new(1, 0, 0, 28), BorderSizePixel = 0,
+			Font = Enum.Font.SourceSans, TextSize = 14, Text = Text,
+			BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.Button),
+			TextColor3 = Theme(Enum.StudioStyleGuideColor.ButtonText) }, SRoot)
+	end
+
+	local InfoL = SText(1, "", Dim())
+	SText(2, "Автовынос в отдельные файлы", nil, 15)
+	SText(3, "Если объект вместе со всеми вложенными занимает в .bridge больше N строк (1 строка = 1 объект со свойствами), "
+		.. "он сам выносится в отдельный файл Scene/<путь>.bridge. По умолчанию 500. 0 — выключить: тогда выносите только вы "
+		.. "кнопкой «Вынести выделенный». При N > 0 объект длиннее N строк нельзя вернуть в общий файл: он вынесется снова. "
+		.. "Новое значение применится при следующем Pull.", Dim())
+	local AutoBox = SBox(4, 24, false)
+	SText(5, "Сервисы (по одному в строке). Сервисы вне списка не синхронизируются.", nil, 15)
+	local SvcBox = SBox(6, 150, true)
+	SText(7, "Игнорировать (пути объектов вместе с потомками, по одному в строке, например Workspace/Camera)", nil, 15)
+	local IgnBox = SBox(8, 70, true)
+	local SaveBtn = SBtn(9, "Сохранить настройки")
+	local StatL = SText(10, "", Dim())
+	SText(11, "Вынесено в отдельные файлы (клик по пути — выделить в Explorer)", nil, 15)
+	local SplitsFrame = make("Frame", { LayoutOrder = 12, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1 }, SRoot)
+	make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, SplitsFrame)
+	local ReloadBtn = SBtn(13, "Обновить")
+
+	local function SStatus(Text, Color)
+		StatL.Text = Text
+		StatL.TextColor3 = Color or Theme(Enum.StudioStyleGuideColor.MainText)
+	end
+
+	local function Do(Fn)
+		if Working then return end
+		Working = true
+		task.spawn(function()
+			local Ok, Err = pcall(Fn)
+			if not Ok then SStatus("✖ " .. tostring(Err), Red) end
+			Working = false
+		end)
+	end
+
+	-- Объект по пути (спуск по уровням, без обхода всего дерева)
+	local function Find(PathStr)
+		local Inst, Acc = nil, ""
+		for Seg in string.gmatch(PathStr, "[^/]+") do
+			if Acc == "" then
+				Inst, Acc = game:FindService(Seg), Seg
+			else
+				if not Inst then return nil end
+				local Want, Found = Acc .. "/" .. Seg, nil
+				for _, K in ipairs(Kids(Inst, Acc)) do
+					if K[1] == Want then Found = K[2]; break end
+				end
+				Inst, Acc = Found, Want
+			end
+		end
+		return Inst
+	end
+
+	local Load
+	local function Fill(D)
+		InfoL.Text = "PlaceId " .. tostring(D.placeId) .. ", создан " .. tostring(D.created)
+		AutoBox.Text = tostring(D.autoSplit)
+		SvcBox.Text = table.concat(D.services or {}, "\n")
+		IgnBox.Text = table.concat(D.ignore or {}, "\n")
+		for _, C in ipairs(SplitsFrame:GetChildren()) do
+			if C:IsA("Frame") or C:IsA("TextLabel") then C:Destroy() end
+		end
+		local List = D.splits or {}
+		if #List == 0 then
+			make("TextLabel", { LayoutOrder = 1, Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1,
+				TextXAlignment = Enum.TextXAlignment.Left, Font = Enum.Font.SourceSans, TextSize = 13,
+				Text = "(ничего не вынесено)", TextColor3 = Dim() }, SplitsFrame)
+		end
+		for I, S in ipairs(List) do
+			local RowF = make("Frame", { LayoutOrder = I, Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1 }, SplitsFrame)
+			make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4),
+				SortOrder = Enum.SortOrder.LayoutOrder }, RowF)
+			local Name = make("TextButton", { LayoutOrder = 1, Size = UDim2.new(1, -84, 1, 0), BackgroundTransparency = 1,
+				TextXAlignment = Enum.TextXAlignment.Left, Font = Enum.Font.Code, TextSize = 12,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				Text = S.path .. (S.exists and ("  (" .. S.lines .. " стр.)") or "  (файла нет!)"),
+				TextColor3 = S.exists and Theme(Enum.StudioStyleGuideColor.MainText) or Red }, RowF)
+			local Back = make("TextButton", { LayoutOrder = 2, Size = UDim2.new(0, 80, 1, 0), BorderSizePixel = 0,
+				Font = Enum.Font.SourceSans, TextSize = 13, Text = "Вернуть",
+				BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.Button),
+				TextColor3 = Theme(Enum.StudioStyleGuideColor.ButtonText) }, RowF)
+			Name.MouseButton1Click:Connect(function()
+				local Inst = Find(S.path)
+				if Inst then Selection:Set({ Inst }) else SStatus("Объект не найден в Studio: " .. S.path, Yellow) end
+			end)
+			Back.MouseButton1Click:Connect(function()
+				Do(function()
+					local R, E = Call("/unsplit" .. Q(), { path = S.path })
+					if E then error(E, 0) end
+					SStatus(R.text or "Готово", R.warn and Yellow or Green)
+					Load()
+				end)
+			end)
+		end
+	end
+
+	Load = function()
+		local D, E = Call("/settings" .. Q())
+		if E then error(E, 0) end
+		Fill(D)
+	end
+
+	local function Lines(Text)
+		local R = {}
+		for L in string.gmatch(Text, "[^\r\n]+") do
+			local T = string.match(L, "^%s*(.-)%s*$")
+			if T ~= "" then table.insert(R, T) end
+		end
+		return R
+	end
+
+	local function DoSave()
+		local N = tonumber(AutoBox.Text)
+		if not N or N < 0 or N ~= math.floor(N) then error("Автовынос: нужно целое число, 0 или больше", 0) end
+		local Svc = Lines(SvcBox.Text)
+		if #Svc == 0 then error("Список сервисов не может быть пустым", 0) end
+		local Bad = {}
+		for _, S in ipairs(Svc) do
+			if not pcall(game.GetService, game, S) then table.insert(Bad, S) end
+		end
+		if #Bad > 0 then error("Нет такого сервиса в Studio: " .. table.concat(Bad, ", "), 0) end
+		local D, E = Call("/settings" .. Q(), { autoSplit = N, services = Svc, ignore = Lines(IgnBox.Text) })
+		if E then error(E, 0) end
+		SStatus((D.text or "Готово") .. ". Чтобы изменения попали в файлы, сделайте Pull.", Green)
+		Fill(D)
+	end
+
+	SaveBtn.MouseButton1Click:Connect(function() Do(DoSave) end)
+	ReloadBtn.MouseButton1Click:Connect(function() Do(Load) end)
+
+	local SetBtn = make("TextButton", { LayoutOrder = 9, Size = UDim2.new(1, 0, 0, 22), BackgroundTransparency = 1,
+		Font = Enum.Font.SourceSans, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = Color3.fromRGB(90, 160, 255), Text = "⚙ Настройки плейса…", Visible = false }, Root)
+	SetBtn.MouseButton1Click:Connect(function()
+		SW.Enabled = true
+		Do(Load)
+	end)
+	task.spawn(function()
+		while true do
+			SetBtn.Visible = State.Found and State.Place == "ready"
 			task.wait(0.5)
 		end
 	end)

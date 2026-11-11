@@ -124,6 +124,108 @@ if(window.chrome?.webview){
 }else{
     ShowError("Нет связи с приложением", "Страница запущена не внутри WebView2.");
 }
+
+(function(){
+    const St = document.createElement('style');
+    St.textContent = `
+    #syncFab{position:fixed;right:12px;bottom:12px;z-index:9998;padding:8px 14px;background:#2d6cdf;color:#fff;border:0;border-radius:4px;cursor:pointer;font:13px sans-serif}
+    #syncPanel{position:fixed;inset:0;z-index:9999;background:#1e1e1e;color:#ddd;font:13px sans-serif;display:none;flex-direction:column;padding:12px;box-sizing:border-box}
+    #syncPanel.open{display:flex}
+    #syncBar{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+    #syncBar button{padding:6px 12px;background:#3a3a3a;color:#eee;border:1px solid #555;border-radius:3px;cursor:pointer}
+    #syncBar button:disabled{opacity:.4;cursor:default}
+    #syncText{margin-bottom:8px;min-height:18px}
+    #syncLines{flex:1;overflow:auto;background:#141414;padding:8px;font:12px Consolas,monospace;border-radius:3px}
+    #syncLines div{white-space:pre}
+    .sl-add{color:#46aa5a}.sl-del{color:#e15050}.sl-chg{color:#dcaa28}.sl-x{color:#888}.sl-warn{color:#f08228}.sl-note{color:#999}
+    .st-ok{color:#46aa5a}.st-warn{color:#dcaa28}.st-err{color:#e15050}.st-info{color:#ddd}`;
+    document.head.appendChild(St);
+
+    const Fab = document.createElement('button');
+    Fab.id = 'syncFab'; Fab.textContent = '⇄ Синхронизация';
+    const Panel = document.createElement('div');
+    Panel.id = 'syncPanel';
+    Panel.innerHTML = '<div id="syncBar">'
+        + '<button id="syncPull">Pull: Studio → файлы</button>'
+        + '<button id="syncPre">Push: предпросмотр</button>'
+        + '<button id="syncApply" disabled>Применить в Studio</button>'
+        + '<span style="flex:1"></span><button id="syncClose">Закрыть</button></div>'
+        + '<div id="syncText">Нажмите кнопку. Команду выполнит плагин в Studio (до ~3 с).</div>'
+        + '<div id="syncLines"></div>';
+    document.body.append(Fab, Panel);
+
+    const El = id => document.getElementById(id);
+    let Timer = null;
+
+    function Cmd(C){
+        window.chrome.webview.postMessage(JSON.stringify({ Type: 'SyncCmd', Data: { Cmd: C } }));
+        El('syncText').className = 'st-info';
+        El('syncText').textContent = 'Команда отправлена, жду плагин (до ~3 с)…';
+        clearTimeout(Timer);
+        Timer = setTimeout(() => {
+            El('syncText').className = 'st-err';
+            El('syncText').textContent = 'Плагин не ответил. Открыта ли Studio, зелёный ли статус в панели RobloxBridge, не идёт ли Play?';
+        }, 20000);
+    }
+
+    function LineClass(L){
+        switch(L[0]){
+            case '+': return 'sl-add'; case '-': return 'sl-del'; case '~': return 'sl-chg';
+            case 'x': return 'sl-x'; case '!': return 'sl-warn'; default: return 'sl-note';
+        }
+    }
+
+    function Show(D){
+        clearTimeout(Timer);
+        const T = El('syncText');
+        T.className = 'st-' + (D.kind || 'info');
+        T.textContent = D.text || '';
+        El('syncApply').disabled = !D.canApply;
+        if(Array.isArray(D.lines)){
+            const Box = El('syncLines'), Frag = document.createDocumentFragment();
+            for(const L of D.lines){
+                const Row = document.createElement('div');
+                Row.className = LineClass(L); Row.textContent = L;
+                Frag.appendChild(Row);
+            }
+            Box.replaceChildren(Frag);
+        }
+    }
+
+    Fab.onclick = () => Panel.classList.add('open');
+    El('syncClose').onclick = () => Panel.classList.remove('open');
+    El('syncPull').onclick = () => Cmd('pull');
+    El('syncPre').onclick = () => Cmd('preview');
+    El('syncApply').onclick = () => Cmd('apply');
+
+    window.chrome.webview.addEventListener('message', e => {
+        let M = e.data;
+        while(typeof M === 'string'){ try{ M = JSON.parse(M); }catch(_){ return; } }
+        if(M && M.Type === 'SyncResult' && M.Data){ Show(M.Data); }
+    });
+})();
+
+(function(){
+  setInterval(function(){
+    const A = document.getElementById('syncApply');
+    if(!A || document.getElementById('syncUndo')){ return; }
+    const B = document.createElement('button');
+    B.id = 'syncUndo';
+    B.className = A.className;
+    B.textContent = '↩ Отменить применение';
+    B.disabled = true;
+    B.onclick = function(){ window.chrome.webview.postMessage(JSON.stringify({Type:'SyncCmd', Data:{Cmd:'undo'}})); };
+    A.insertAdjacentElement('afterend', B);
+  }, 500);
+  window.chrome.webview.addEventListener('message', function(E){
+    let M = E.data;
+    while(typeof M === 'string'){ try{ M = JSON.parse(M); }catch(X){ return; } }
+    if(M && M.Type === 'SyncResult' && M.Data){
+      const B = document.getElementById('syncUndo');
+      if(B){ B.disabled = !M.Data.canUndo; }
+    }
+  });
+})();
 """;
 
     // language=HTML

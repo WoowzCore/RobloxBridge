@@ -1,4 +1,4 @@
--- ау?? это будет работать?
+-- ggeropjnrtnrsthnrwighoerity9w5gviwet4yb 4wyb w45y
 
 --// Day/Night Cycle, @Shyfoox
 --// Put this script in ServerScriptService
