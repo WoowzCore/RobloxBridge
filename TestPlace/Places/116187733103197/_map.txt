@@ -35,3 +35,5 @@ Workspace "Workspace"  [Scene/Workspace.bridge]
   SpawnLocation "SpawnLocation"
     Decal "Decal"
   Terrain "Terrain"
+  UnionOperation "UnionOperation"
+  UnionOperation "UnionOperation"

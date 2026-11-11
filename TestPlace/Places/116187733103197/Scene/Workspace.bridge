@@ -149,4 +149,6 @@ Workspace "Workspace" AirDensity=0.001 AirTurbulenceIntensity=0 AllowThirdPartyS
         Decal "Decal" Face=Top TextureContent="rbxasset://textures/SpawnLocation.png"
     }
     Terrain "Terrain" Size=2044,252,2044 Anchored AudioCanCollide BackSurface=Smooth BottomSurface=Inlet CFrame=0,0,0 CanCollide CanQuery CanTouch CastShadow CollisionGroup="Default" Color=#A3A2A5 Decoration EnableFluidForces FrontSurface=Smooth GrassLength=0.7 LeftSurface=Smooth Locked Massless=false Material=Plastic PivotOffset=0,0,0 Reflectance=0 RightSurface=Smooth RootPriority=0 TopSurface=Studs Transparency=0 WaterColor=#0C545C WaterReflectance=1 WaterTransparency=0.3 WaterWaveSize=0.15 WaterWaveSpeed=10
+    UnionOperation "UnionOperation" Size=4,1,2 CFrame=-52.89,0.5,30.07 Color=#A3A2A5 $_geo="051e453489ee3ecd"
+    UnionOperation "UnionOperation" Size=4,1,2 CFrame=-52.89,10.5,30.07 Color=#A3A2A5 $_geo="051e453489ee3ecd"
 }

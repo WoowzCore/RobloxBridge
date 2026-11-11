@@ -925,7 +925,7 @@ public static class Sync{
 
     // Возвращает true, если путь обработан здесь
     public static bool TryHandle(string Route, HttpListenerRequest Req, HttpListenerResponse Res){
-        if(Route != "/config" && Route != "/pull" && Route != "/push" && Route != "/note" && Route != "/split" && Route != "/split/forget" && Route != "/unsplit" && Route != "/settings" && Route != "/report"  && Route != "/terrain/put" && Route != "/terrain/get" && Route != "/terrain/info"){ return false; }
+        if(Route != "/config" && Route != "/pull" && Route != "/push" && Route != "/note" && Route != "/split" && Route != "/split/forget" && Route != "/unsplit" && Route != "/settings" && Route != "/report"  && Route != "/terrain/put" && Route != "/terrain/get" && Route != "/terrain/info"  && Route != "/geo/list" && Route != "/geo/put" && Route != "/geo/get"){ return false; }
         __Dbg = false;
         try{
             if(Dump.Blocking){ Reply(Res, 409, new{ error = "Нет файла Full-API-Dump: работа заблокирована" }); return true; }
@@ -962,6 +962,13 @@ public static class Sync{
             if(Route == "/terrain/put" || Route == "/terrain/get" || Route == "/terrain/info"){
                 lock(__Lock){
                     Reply(Res, 200, __Terrain(Route, Req, Body, PlaceDir));
+                }
+                return true;
+            }
+            
+            if(Route == "/geo/list" || Route == "/geo/put" || Route == "/geo/get"){
+                lock(__Lock){
+                    Reply(Res, 200, __Geo(Route, Body, PlaceDir));
                 }
                 return true;
             }
@@ -1018,7 +1025,7 @@ public static class Sync{
         return true;
     }
 
-        private const int          __TerrainPart = 300000;   // символов base64 в одном ответе
+    private const int          __TerrainPart = 300000;   // символов base64 в одном ответе
     private static string      __TSession = "";
     private static StringBuilder? __TBuf;
 
@@ -1058,6 +1065,64 @@ public static class Sync{
         File.Move(Tmp, Target, true);
         Log?.Invoke($"Террейн: записано {Bytes.Length / 1024} КБ → Terrain.voxels", "Info");
         return new{ status = "ok", size = Bytes.Length };
+    }
+    
+        private static readonly Regex __GeoName = new("^[0-9a-f]{16}$");
+
+    // Геометрия юнионов: Geometry/<хеш>.bin. Сервер хранит байты как прислал плагин (Zstd), формат знает плагин.
+    private static object __Geo(string Route, string Body, string PlaceDir){
+        string Dir = Path.Combine(PlaceDir, "Geometry");
+
+        if(Route == "/geo/list"){
+            List<string> Have = [];
+            if(Directory.Exists(Dir)){
+                foreach(string F in Directory.EnumerateFiles(Dir, "*.bin")){
+                    string H = Path.GetFileNameWithoutExtension(F);
+                    if(__GeoName.IsMatch(H)){ Have.Add(H); }
+                }
+            }
+            return new{ status = "ok", hashes = Have };
+        }
+
+        JsonNode? J = JsonNode.Parse(Body);
+
+        if(Route == "/geo/put"){
+            Directory.CreateDirectory(Dir);
+            int Saved = 0;
+            foreach(JsonNode? Item in (J?["items"] as JsonArray) ?? new JsonArray()){
+                string H = (string?)Item?["h"] ?? "";
+                string D = (string?)Item?["d"] ?? "";
+                if(!__GeoName.IsMatch(H)){ throw new InvalidOperationException("Геометрия: недопустимый хеш «" + H + "»"); }
+
+                string Target = Path.Combine(Dir, H + ".bin");
+                if(File.Exists(Target)){ continue; }   // тот же хеш = та же геометрия
+
+                byte[] Bytes;
+                try{ Bytes = Convert.FromBase64String(D); }
+                catch(FormatException){ throw new InvalidOperationException("Геометрия " + H + ": данные не base64"); }
+                if(Bytes.Length == 0){ throw new InvalidOperationException("Геометрия " + H + ": пустые данные"); }
+
+                string Tmp = Target + ".tmp";
+                File.WriteAllBytes(Tmp, Bytes);
+                File.Move(Tmp, Target, true);
+                Saved++;
+            }
+            if(Saved > 0){ Log?.Invoke($"Геометрия юнионов: сохранено новых {Saved}", "Info"); }
+            return new{ status = "ok", saved = Saved };
+        }
+
+        // /geo/get
+        List<object> Items = [];
+        List<string> Missing = [];
+        foreach(JsonNode? X in (J?["hashes"] as JsonArray) ?? new JsonArray()){
+            string H = (string?)X ?? "";
+            if(!__GeoName.IsMatch(H)){ throw new InvalidOperationException("Геометрия: недопустимый хеш «" + H + "»"); }
+
+            string Target = Path.Combine(Dir, H + ".bin");
+            if(File.Exists(Target)){ Items.Add(new{ h = H, d = Convert.ToBase64String(File.ReadAllBytes(Target)) }); }
+            else{ Missing.Add(H); }
+        }
+        return new{ status = "ok", items = Items, missing = Missing };
     }
     
     private static List<string> __Lines(JsonNode? N){

@@ -475,7 +475,7 @@ do
 	local PropCache, DefCache = {}, {}
 
 	local SkipProp = { Name = true, Source = true, UniqueId = true, HistoryId = true, SourceAssetId = true,
-		ScriptGuid = true, Color3uint8 = true, BrickColor = true }
+		ScriptGuid = true, Color3uint8 = true, BrickColor = true, InitialSize = true }
 	local Simple = { bool = true, int = true, float = true, double = true, int64 = true, string = true, Content = true,
 		Vector2 = true, Vector3 = true, UDim = true, UDim2 = true, Color3 = true, CFrame = true, Rect = true, NumberRange = true,
 		Ref = true, Font = true, BrickColor = true, NumberSequence = true, ColorSequence = true, Vector3int16 = true,
@@ -659,7 +659,7 @@ do
 	local function Kids(Inst, Path)
 		local Items = {}
 		for _, Ch in ipairs(Inst:GetChildren()) do
-			if not Ch:IsA("PartOperation") and Ch.ClassName ~= "TouchTransmitter" then table.insert(Items, Ch) end
+			if Ch.ClassName ~= "TouchTransmitter" then table.insert(Items, Ch) end
 		end
 		table.sort(Items, function(A, B)
 			if A.Name ~= B.Name then return A.Name < B.Name end
@@ -707,6 +707,136 @@ do
 		return P
 	end
 
+	-- ===== Юнионы: геометрия =====
+	local Geo = { store = {}, got = {}, known = nil, ok = false,
+		Classes = { UnionOperation = true, NegateOperation = true, IntersectOperation = true } }
+	do
+		local OkS, SS = pcall(game.GetService, game, "SerializationService")
+		local OkE, ES = pcall(game.GetService, game, "EncodingService")
+		Geo.ok = OkS and OkE
+
+		local function Hash(Buf)
+			local Len = buffer.len(Buf)
+			local H1, H2 = 2166136261, (5381 + Len) % 4294967296
+			for I = 0, Len - 1 do
+				local B = buffer.readu8(Buf, I)
+				local X = bit32.bxor(H1, B)
+				H1 = (X * 403 + bit32.lshift(X, 24)) % 4294967296   -- X * 16777619 mod 2^32 без потери точности
+				H2 = bit32.bxor((H2 * 33) % 4294967296, B)
+			end
+			return string.format("%08x%08x", H1, H2)
+		end
+
+		-- хеш геометрии юниона (и запоминает буфер для загрузки на сервер)
+		function Geo.Of(Inst)
+			if not Geo.ok then return nil end
+			local C = Inst:Clone()
+			if not C then return nil end
+			C:ClearAllChildren()
+			for K in pairs(C:GetAttributes()) do C:SetAttribute(K, nil) end
+			for _, T in ipairs(C:GetTags()) do C:RemoveTag(T) end
+			C.Name = "U"
+			C.Color = Color3.fromRGB(163, 162, 165)
+			C.Material = Enum.Material.Plastic
+			C.Transparency = 0
+			C.Anchored = false
+			C:PivotTo(CFrame.new())
+			local Buf = SS:SerializeInstancesAsync({ C })
+			C:Destroy()
+			local H = Hash(Buf)
+			Geo.store[H] = Buf
+			return H
+		end
+
+		function Geo.OpHash(Op)
+			if not Geo.Classes[Op.class] then return nil end
+			for _, A in ipairs(Op.attrs or {}) do
+				if A.k == "_geo" then return A.v end
+			end
+			return nil
+		end
+
+		-- какие геометрии уже есть на сервере (тихо; для предпросмотра)
+		function Geo.Refresh()
+			Geo.known = nil
+			local D, E = Call("/geo/list" .. Q(), nil, true)
+			if E or not D then return end
+			Geo.known = {}
+			for _, H in ipairs(D.hashes or {}) do Geo.known[H] = true end
+		end
+
+		-- Pull: залить новые геометрии. Возвращает сколько залито
+		function Geo.Upload()
+			local All = {}
+			for H in pairs(Geo.store) do table.insert(All, H) end
+			if #All == 0 then return 0 end
+			if not Geo.ok then error("SerializationService/EncodingService недоступны в этой Studio", 0) end
+			local D, E = Call("/geo/list" .. Q())
+			if E then error(E, 0) end
+			local Have = {}
+			for _, H in ipairs(D.hashes or {}) do Have[H] = true end
+			local Need = {}
+			for _, H in ipairs(All) do
+				if not Have[H] then table.insert(Need, H) end
+			end
+			table.sort(Need)
+			local Batch, Size, Sent = {}, 0, 0
+			local function Flush()
+				if #Batch == 0 then return end
+				local _, E2 = Call("/geo/put" .. Q(), { items = Batch })
+				if E2 then error(E2, 0) end
+				Sent += #Batch
+				Batch, Size = {}, 0
+			end
+			for _, H in ipairs(Need) do
+				local Z = ES:CompressBuffer(Geo.store[H], Enum.CompressionAlgorithm.Zstd, 3)
+				local B64 = buffer.tostring(ES:Base64Encode(Z))
+				if Size + #B64 > 300000 and #Batch > 0 then Flush() end
+				table.insert(Batch, { h = H, d = B64 })
+				Size += #B64
+			end
+			Flush()
+			return Sent
+		end
+
+		-- Push: скачать геометрии, нужные операциям
+		function Geo.Fetch(Ops)
+			Geo.got = {}
+			local Need, Seen = {}, {}
+			for _, Op in ipairs(Ops) do
+				local H = Geo.OpHash(Op)
+				if H and not Seen[H] then Seen[H] = true; table.insert(Need, H) end
+			end
+			if #Need == 0 then return end
+			if not Geo.ok then error("SerializationService/EncodingService недоступны в этой Studio", 0) end
+			for I = 1, #Need, 20 do
+				local Part = { table.unpack(Need, I, math.min(I + 19, #Need)) }
+				local D, E = Call("/geo/get" .. Q(), { hashes = Part })
+				if E then error(E, 0) end
+				for _, It in ipairs(D.items or {}) do
+					local Raw = ES:DecompressBuffer(ES:Base64Decode(buffer.fromstring(It.d)), Enum.CompressionAlgorithm.Zstd)
+					Geo.got[It.h] = Raw
+				end
+			end
+		end
+
+		-- новый юнион из файла геометрии. Size из операции убираем: он уже внутри геометрии
+		function Geo.Make(H, Op)
+			local Raw = Geo.got[H]
+			if not Raw then error("геометрия " .. H .. " не получена с сервера", 0) end
+			local U = SS:DeserializeInstancesAsync(Raw)[1]
+			if not U or not U:IsA("PartOperation") then error("в файле геометрии " .. H .. " не юнион", 0) end
+			if Op and Op.set then
+				local Keep = {}
+				for _, P in ipairs(Op.set) do
+					if P.k ~= "Size" then table.insert(Keep, P) end
+				end
+				Op.set = Keep
+			end
+			return U
+		end
+	end
+
 	-- ===== Сериализация Studio =====
 	local Counter = 0
 	local function Node(Inst, Path, Ign, Skipped)
@@ -740,6 +870,17 @@ do
 			local E = EncAttr(V)
 			if E then A[K] = E; AnyA = true end
 		end
+		
+		if Inst:IsA("PartOperation") then
+			local Ok, H = pcall(Geo.Of, Inst)
+			if Ok and H then
+				A._geo = { t = "s", v = H }
+				AnyA = true
+			else
+				Skipped["юнион без геометрии"] = (Skipped["юнион без геометрии"] or 0) + 1
+			end
+		end
+		
 		if AnyA then N.a = A end
 
 		local Tags = Inst:GetTags()
@@ -754,6 +895,7 @@ do
 	end
 
 	local function Collect(Cfg)
+		Geo.store = {}
 		Counter = 0
 		local Ign = {}
 		for _, P in ipairs(Cfg.ignore or {}) do Ign[P] = true end
@@ -922,28 +1064,37 @@ do
 	end
 
 	local function Classify(Ops, Cfg)
-		local Out, Map = {}, nil
+		local Out = {}
 		for _, Op in ipairs(Ops) do
 			local Info = Schema.Classes[Op.class]
+			local GH = Geo.OpHash(Op)
 			if Op.op == "create" then
 				if not Info then
 					table.insert(Out, "x " .. Op.path .. ": класса " .. Op.class .. " нет в схеме, не создастся")
-				elseif Info.NotCreatable or Info.Service then
+				elseif Geo.Classes[Op.class] then
+					local H = Geo.OpHash(Op)
+					if not H then
+						table.insert(Out, "x " .. Op.path .. ": у юниона нет $_geo, геометрии не будет")
+					elseif not Geo.ok then
+						table.insert(Out, "x " .. Op.path .. ": SerializationService/EncodingService недоступны, юнион не создастся")
+					elseif Geo.known and not Geo.known[H] then
+						table.insert(Out, "x " .. Op.path .. ": файла Geometry/" .. H .. ".bin нет, юнион не создастся")
+					else
+						CheckProps(Op, Out)
+					end
+				elseif not Info or Info.Service or (Info.NotCreatable and not GH) then
 					table.insert(Out, "x " .. Op.path .. ": класс " .. Op.class .. " нельзя создать")
 				else
 					CheckProps(Op, Out)
 				end
 			elseif Op.op == "set" then
 				if Info then CheckProps(Op, Out) end
+				if Geo.OpHash(Op) then
+					table.insert(Out, "! " .. Op.path .. ": геометрия юниона отличается от файла, юнион будет заменён (ссылки на него, например WeldConstraint, потеряются)")
+				end
 			elseif Op.op == "delete" then
 				if Op.class == "Terrain" then
 					table.insert(Out, "x " .. Op.path .. ": Terrain не удаляется")
-				else
-					Map = Map or Index(Cfg)
-					local I = Map[Op.path]
-					if I and I:FindFirstChildWhichIsA("PartOperation", true) then
-						table.insert(Out, "! " .. Op.path .. ": внутри есть Union/Negate (геометрия не сохраняется), они удалятся без возможности восстановить из файлов")
-					end
 				end
 			end
 		end
@@ -954,6 +1105,10 @@ do
 	local Defer = {}
 	local function SetProps(Inst, Op, Errs, J)
 		local Types = PropsOf(Op.class).types
+		local Attrs = {}
+		for _, P in ipairs(Op.attrs or {}) do
+			if P.k ~= "_geo" then table.insert(Attrs, P) end
+		end
 		local function Keep(K)
 			if not J then return end
 			local Ok, Old = pcall(GetProp, Inst, K)
@@ -1008,7 +1163,7 @@ do
 				if not Ok then table.insert(Errs, Op.path .. "." .. K .. ": " .. tostring(E)) end
 			end
 		end
-		for _, P in ipairs(Op.attrs or {}) do
+		for _, P in ipairs(Attrs) do
 			if J then
 				local Old = Inst:GetAttribute(P.k)
 				table.insert(J, function() Inst:SetAttribute(P.k, Old) end)
@@ -1040,6 +1195,33 @@ do
 		end
 	end
 
+	function Geo.Replace(Old, Op, H, Errs, J)
+		local New = Geo.Make(H, Op)
+		for _, E in ipairs(PropsOf(Op.class).list) do
+			if E[1] ~= "Size" then
+				local Ok, V = pcall(GetProp, Old, E[1])
+				if Ok and V ~= nil then pcall(function() New[E[1]] = V end) end
+			end
+		end
+		for K, V in pairs(Old:GetAttributes()) do New:SetAttribute(K, V) end
+		for _, T in ipairs(Old:GetTags()) do New:AddTag(T) end
+		New.Name = Old.Name
+		SetProps(New, Op, Errs, nil)
+		local Par, Moved = Old.Parent, {}
+		for _, Ch in ipairs(Old:GetChildren()) do
+			table.insert(Moved, Ch)
+			Ch.Parent = New
+		end
+		New.Parent = Par
+		Old.Parent = nil
+		table.insert(J, function()
+			New.Parent = nil
+			for _, Ch in ipairs(Moved) do Ch.Parent = Old end
+			Old.Parent = Par
+		end)
+		return New
+	end
+
 	local function ApplyOps(Ops, Cfg)
 		Defer = {}
 		local Map = Index(Cfg)
@@ -1052,17 +1234,23 @@ do
 					local ParentPath = string.match(Op.path, "^(.*)/[^/]*$")
 					local Parent = ParentPath and Map[ParentPath]
 					local Info = Schema.Classes[Op.class]
+					local GH = Geo.OpHash(Op)
 					if ParentPath and Failed[ParentPath] then
 						Failed[Op.path] = true
 						Skipped += 1
 					elseif not Parent then
 						Failed[Op.path] = true
 						table.insert(Errs, Op.path .. ": не найден родитель")
-					elseif not Info or Info.NotCreatable or Info.Service then
+					elseif not Info or Info.Service or (Info.NotCreatable and not GH) then
 						Failed[Op.path] = true
 						table.insert(Errs, Op.path .. ": класс " .. Op.class .. " нельзя создать")
 					else
-						local Ok2, I = pcall(Instance.new, Op.class)
+						local Ok2, I
+						if GH then
+							Ok2, I = pcall(Geo.Make, GH, Op)
+						else
+							Ok2, I = pcall(Instance.new, Op.class)
+						end
 						if not Ok2 then
 							Failed[Op.path] = true
 							table.insert(Errs, Op.path .. ": " .. tostring(I))
@@ -1078,7 +1266,17 @@ do
 				elseif Op.op == "set" then
 					local I = Map[Op.path]
 					if I then
-						SetProps(I, Op, Errs, J)
+						local H = Geo.OpHash(Op)
+						if H and I:IsA("PartOperation") then
+							local Ok4, New = pcall(Geo.Replace, I, Op, H, Errs, J)
+							if Ok4 then
+								Map[Op.path] = New
+							else
+								table.insert(Errs, Op.path .. ": замена юниона не удалась: " .. tostring(New))
+							end
+						else
+							SetProps(I, Op, Errs, J)
+						end
 						Changed += 1
 					else
 						table.insert(Errs, Op.path .. ": объект не найден в Studio")
@@ -1285,11 +1483,12 @@ do
 	local function DoPull()
 		local Cfg = Prepare()
 		local Svc, Skipped = Collect(Cfg)
+		local GN = Geo.Upload()
 		local D, E = Send("/pull", Svc, Skipped)
 		if E then error(E, 0) end
 		SetUndo(nil)
 		SetPending(nil)
-		SetInfo(D.text or "Готово", Green)
+		SetInfo((D.text or "Готово") .. (GN > 0 and (". Новых геометрий юнионов: " .. GN) or ""), Green)
 		ShowLines(D.lines or {})
 	end
 
@@ -1307,6 +1506,7 @@ do
 			table.insert(Lines, L)
 			table.insert(PreviewLines, L)
 		end
+		Geo.Refresh()
 		local Warn = Classify(D.ops or {}, Cfg)
 		for _, L in ipairs(Warn) do table.insert(Lines, L) end
 		if #Warn > 0 then Note(Warn) end
@@ -1330,6 +1530,7 @@ do
 		local D, E = Send("/push", Svc, Skipped, { apply = true, token = P.token })
 		SetPending(nil)
 		if E then error(E, 0) end
+		Geo.Fetch(D.ops or {})
 		local Created, Changed, Deleted, Skip, Errs, J = ApplyOps(D.ops or {}, Cfg)
 		SetUndo(J)
 		local Str = "Применено: создано " .. Created .. ", изменено " .. Changed .. ", удалено " .. Deleted
@@ -1404,7 +1605,7 @@ do
 	-- Путь объекта по тем же правилам, что на сервере (~2 у одинаковых братьев, %2F)
 	local function PathOf(Inst)
 		if Inst.Parent == game then return Inst.Name end
-		if not Inst.Parent or Inst:IsA("PartOperation") then return nil end
+		if not Inst.Parent then return nil end
 		local PP = PathOf(Inst.Parent)
 		if not PP then return nil end
 		for _, K in ipairs(Kids(Inst.Parent, PP)) do
@@ -1452,7 +1653,7 @@ do
 		A.Title = Inst.ClassName .. " · «" .. Inst.Name .. "»"
 		local Path = PathOf(Inst)
 		if not Path then
-			A.Status = "Не синхронизируется: вне сервисов или внутри Union/Negate"
+			A.Status = "Не синхронизируется: вне синхронизируемых сервисов"
 			return A
 		end
 		A.Path = Path
@@ -2107,7 +2308,7 @@ do
 			{ Color = C.Dim, Size = 12 })
 		RegionBox = Box(TC, 3, 28, false)
 		RegionBox.PlaceholderText = "x0,y0,z0  x1,y1,z1"
-		RegionBox.Text = plugin:GetSetting(TKey) or "-128,-512,-2112  832,0,-1088"
+		RegionBox.Text = plugin:GetSetting(TKey) or "-512,-128,-512  512,256,512"
 		RegionBox.FocusLost:Connect(function() plugin:SetSetting(TKey, RegionBox.Text) end)
 		local TSel = Button(TC, 4, "Область из выделенной детали/модели", "link")
 		local VizBtn = Button(TC, 5, "👁 Показать область", "link")
