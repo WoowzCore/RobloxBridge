@@ -925,7 +925,7 @@ public static class Sync{
 
     // Возвращает true, если путь обработан здесь
     public static bool TryHandle(string Route, HttpListenerRequest Req, HttpListenerResponse Res){
-        if(Route != "/config" && Route != "/pull" && Route != "/push" && Route != "/note" && Route != "/split" && Route != "/split/forget" && Route != "/unsplit" && Route != "/settings" && Route != "/report"){ return false; }
+        if(Route != "/config" && Route != "/pull" && Route != "/push" && Route != "/note" && Route != "/split" && Route != "/split/forget" && Route != "/unsplit" && Route != "/settings" && Route != "/report"  && Route != "/terrain/put" && Route != "/terrain/get" && Route != "/terrain/info"){ return false; }
         __Dbg = false;
         try{
             if(Dump.Blocking){ Reply(Res, 409, new{ error = "Нет файла Full-API-Dump: работа заблокирована" }); return true; }
@@ -956,6 +956,13 @@ public static class Sync{
             __Resolve(Req, out string PlaceDir, out PlaceData Place);
             if(Route == "/config"){
                 Reply(Res, 200, new{ services = Place.Services, ignore = Place.Ignore, splits = Place.Splits });
+                return true;
+            }
+            
+            if(Route == "/terrain/put" || Route == "/terrain/get" || Route == "/terrain/info"){
+                lock(__Lock){
+                    Reply(Res, 200, __Terrain(Route, Req, Body, PlaceDir));
+                }
                 return true;
             }
             
@@ -1011,6 +1018,48 @@ public static class Sync{
         return true;
     }
 
+        private const int          __TerrainPart = 300000;   // символов base64 в одном ответе
+    private static string      __TSession = "";
+    private static StringBuilder? __TBuf;
+
+    // Террейн: сервер только хранит байты, формат знает плагин
+    private static object __Terrain(string Route, HttpListenerRequest Req, string Body, string PlaceDir){
+        string Target = Path.Combine(PlaceDir, "Terrain.voxels");
+
+        if(Route == "/terrain/info"){
+            FileInfo I = new(Target);
+            return new{ status = "ok", exists = I.Exists, size = I.Exists ? I.Length : 0,
+                        time = I.Exists ? I.LastWriteTime.ToString("yyyy-MM-dd HH:mm") : "" };
+        }
+
+        if(Route == "/terrain/get"){
+            if(!File.Exists(Target)){ throw new InvalidOperationException("Файла Terrain.voxels нет. Сначала «Террейн: Pull»."); }
+            string B64   = Convert.ToBase64String(File.ReadAllBytes(Target));
+            int    Parts = Math.Max(1, (B64.Length + __TerrainPart - 1) / __TerrainPart);
+            int    Part  = __Int(Req, "part", 1);
+            if(Part < 1 || Part > Parts){ throw new InvalidOperationException("Неверная часть файла террейна"); }
+            int From = (Part - 1) * __TerrainPart;
+            return new{ status = "ok", part = Part, parts = Parts, data = B64.Substring(From, Math.Min(__TerrainPart, B64.Length - From)) };
+        }
+
+        // /terrain/put: части base64 копятся, на последней файл записывается
+        string Session = Req.QueryString["session"] ?? "";
+        int    P       = __Int(Req, "part", 1), Ps = __Int(Req, "parts", 1);
+        string Data    = (string?)JsonNode.Parse(Body)?["data"] ?? "";
+
+        if(P <= 1 || Session != __TSession || __TBuf == null){ __TSession = Session; __TBuf = new StringBuilder(); }
+        __TBuf.Append(Data);
+        if(P < Ps){ return new{ status = "partial" }; }
+
+        byte[] Bytes = Convert.FromBase64String(__TBuf.ToString());
+        __TBuf = null;
+        string Tmp = Target + ".tmp";
+        File.WriteAllBytes(Tmp, Bytes);
+        File.Move(Tmp, Target, true);
+        Log?.Invoke($"Террейн: записано {Bytes.Length / 1024} КБ → Terrain.voxels", "Info");
+        return new{ status = "ok", size = Bytes.Length };
+    }
+    
     private static List<string> __Lines(JsonNode? N){
         List<string> R = [];
         if(N is JsonArray A){

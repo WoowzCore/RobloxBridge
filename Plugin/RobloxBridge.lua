@@ -1599,6 +1599,597 @@ do
 	Click(UnsplitBtn, function() Run("Возврат", function() SplitAction(false) end) end)
 	Click(IgnoreBtn, function() Run("Правило", IgnoreAction) end)
 
+	-- ===== Террейн (в отдельной функции: у Lua лимит 200 локальных переменных) =====
+	;(function()
+		local TB64, TMAX = 300000, 40000
+		local Air = Enum.Material.Air
+		local HasES, ES = pcall(game.GetService, game, "EncodingService")
+		if not HasES then ES = nil end
+		local TKey = "TerrainRegion" .. game.PlaceId
+		local TJournal, TPendingN = nil, nil
+
+		-- ---------- байты ----------
+		local function NewW() return { b = buffer.create(65536), n = 0 } end
+		local function Ensure(W, N)
+			local Need, Cap = W.n + N, buffer.len(W.b)
+			if Need > Cap then
+				while Cap < Need do Cap *= 2 end
+				local NB = buffer.create(Cap)
+				buffer.copy(NB, 0, W.b, 0, W.n)
+				W.b = NB
+			end
+		end
+		local function PutB(W, V) Ensure(W, 1); buffer.writeu8(W.b, W.n, V); W.n += 1 end
+		local function PutN(W, V, N)
+			V = V % (256 ^ N)
+			for _ = 1, N do PutB(W, V % 256); V = V // 256 end
+		end
+		local function PutS(W, S) Ensure(W, #S); buffer.writestring(W.b, W.n, S); W.n += #S end
+		local function GetB(Rd) local V = buffer.readu8(Rd.b, Rd.p); Rd.p += 1; return V end
+		local function GetN(Rd, N, Signed)
+			local V, M = 0, 1
+			for _ = 1, N do V += GetB(Rd) * M; M *= 256 end
+			if Signed and V >= M / 2 then V -= M end
+			return V
+		end
+
+		-- ---------- палитра материалов ----------
+		local function NewPal()
+			local Items = Enum.Material:GetEnumItems()
+			table.sort(Items, function(A, B) return A.Value < B.Value end)
+			local P = { names = {}, idx = {} }
+			for _, It in ipairs(Items) do
+				P.idx[It] = #P.names
+				table.insert(P.names, It.Name)
+			end
+			return P
+		end
+		local function PalFromNames(Names)
+			local P = { names = {}, idx = {} }
+			for I, N in ipairs(Names) do
+				P.names[I] = N
+				local Ok, It = pcall(function() return Enum.Material[N] end)
+				if Ok and It then P.idx[It] = I - 1 end
+			end
+			return P
+		end
+		local function IdxOf(P, Mat)
+			local I = P.idx[Mat]
+			if I then return I end
+			I = #P.names
+			if I > 255 then error("Слишком много материалов в палитре", 0) end
+			table.insert(P.names, Mat.Name)
+			P.idx[Mat] = I
+			return I
+		end
+		local function ItemsOf(P)
+			local T = {}
+			for It, I in pairs(P.idx) do T[I + 1] = It end
+			return T
+		end
+
+		-- ---------- кусок 16x16x16 <-> RLE-строка ----------
+		local Scratch = buffer.create(16384)
+		local function PutRun(N, Key, Run)
+			buffer.writeu8(Scratch, N, Key // 256)
+			buffer.writeu8(Scratch, N + 1, Key % 256)
+			N += 2
+			local V = Run - 1
+			while V >= 128 do
+				buffer.writeu8(Scratch, N, V % 128 + 128)
+				N += 1
+				V //= 128
+			end
+			buffer.writeu8(Scratch, N, V)
+			return N + 1
+		end
+
+		-- nil, если в куске один воздух
+		local function EncChunk(M, O, Pal)
+			local N, Any, Key, Run = 0, false, -1, 0
+			local PI = Pal.idx
+			for I = 1, 16 do
+				local MI, OI = M[I], O[I]
+				for J = 1, 16 do
+					local MJ, OJ = MI[J], OI[J]
+					for K = 1, 16 do
+						local Mat = MJ[K]
+						local Oc = 0
+						if Mat ~= Air then
+							Oc = math.floor(OJ[K] * 255 + 0.5)
+							Any = true
+						end
+						local K2 = (PI[Mat] or IdxOf(Pal, Mat)) * 256 + Oc
+						if K2 == Key then
+							Run += 1
+						else
+							if Run > 0 then N = PutRun(N, Key, Run) end
+							Key, Run = K2, 1
+						end
+					end
+				end
+			end
+			N = PutRun(N, Key, Run)
+			if not Any then return nil end
+			return buffer.readstring(Scratch, 0, N)
+		end
+
+		local function Blank()
+			local M, O = {}, {}
+			for I = 1, 16 do
+				M[I], O[I] = {}, {}
+				for J = 1, 16 do
+					M[I][J], O[I][J] = table.create(16, Air), table.create(16, 0)
+				end
+			end
+			return M, O
+		end
+
+		local function DecChunk(S, Items)
+			local M, O = Blank()
+			if not S then return M, O end
+			local Buf, Pos, Len, Cnt = buffer.fromstring(S), 0, #S, 0
+			while Pos < Len do
+				local Mat = Items[buffer.readu8(Buf, Pos) + 1] or Air
+				local Oc = buffer.readu8(Buf, Pos + 1) / 255
+				Pos += 2
+				local V, Mul = 0, 1
+				while true do
+					local B = buffer.readu8(Buf, Pos)
+					Pos += 1
+					V += (B % 128) * Mul
+					Mul *= 128
+					if B < 128 then break end
+				end
+				for _ = 0, V do
+					local K, J, I = Cnt % 16 + 1, (Cnt // 16) % 16 + 1, Cnt // 256 + 1
+					M[I][J][K] = Mat
+					O[I][J][K] = Oc
+					Cnt += 1
+				end
+			end
+			if Cnt ~= 4096 then error("Поврежден кусок террейна в файле (вокселей " .. Cnt .. ")", 0) end
+			return M, O
+		end
+
+		local function WriteChunk(P, Data, Items)
+			local Lo = Vector3.new(P[1] * 64, P[2] * 64, P[3] * 64)
+			local M, O = DecChunk(Data, Items)
+			workspace.Terrain:WriteVoxels(Region3.new(Lo, Lo + Vector3.new(64, 64, 64)), 4, M, O)
+		end
+
+		local function CK(X, Y, Z) return X .. "," .. Y .. "," .. Z end
+
+		-- ---------- область ----------
+		local function RegionText(Rg)
+			return string.format("%d,%d,%d  %d,%d,%d", Rg[1], Rg[2], Rg[3], Rg[4], Rg[5], Rg[6])
+		end
+
+		local function ParseRegion(S)
+			local N = {}
+			for X in string.gmatch(S, "%-?%d+%.?%d*") do table.insert(N, tonumber(X)) end
+			if #N ~= 6 then error("Область: нужно 6 чисел «x0,y0,z0  x1,y1,z1»", 0) end
+			local Rg = {}
+			for A = 1, 3 do
+				local Lo, Hi = math.min(N[A], N[A + 3]), math.max(N[A], N[A + 3])
+				Rg[A] = math.floor(Lo / 64) * 64
+				Rg[A + 3] = math.max(math.ceil(Hi / 64) * 64, Rg[A] + 64)
+				if Rg[A] < -32000 or Rg[A + 3] > 32000 then error("Область выходит за ±32000", 0) end
+			end
+			local Cnt = ((Rg[4] - Rg[1]) // 64) * ((Rg[5] - Rg[2]) // 64) * ((Rg[6] - Rg[3]) // 64)
+			if Cnt > TMAX then error("Область слишком большая: " .. Cnt .. " кусков (максимум " .. TMAX .. ")", 0) end
+			return Rg
+		end
+
+		-- Читает террейн области. Возвращает Data[ключ] = RLE-строка, Pos[ключ] = {cx,cy,cz}, Edge, Total
+		local function ScanRegion(Rg, Pal, Label)
+			local CX0, CY0, CZ0 = Rg[1] // 64, Rg[2] // 64, Rg[3] // 64
+			local CX1, CY1, CZ1 = Rg[4] // 64 - 1, Rg[5] // 64 - 1, Rg[6] // 64 - 1
+			local Total = (CX1 - CX0 + 1) * (CY1 - CY0 + 1) * (CZ1 - CZ0 + 1)
+			local Terr = workspace.Terrain
+			local Data, Pos, Edge, Done = {}, {}, 0, 0
+			local TY, TP = os.clock(), os.clock()
+
+			-- воксели на внешней границе области (не воздух): террейн мог выйти за область
+			local function EdgeCount(M, CX, CY, CZ)
+				if CX ~= CX0 and CX ~= CX1 and CY ~= CY0 and CY ~= CY1 and CZ ~= CZ0 and CZ ~= CZ1 then return 0 end
+				local N = 0
+				for I = 1, 16 do for J = 1, 16 do for K = 1, 16 do
+					if M[I][J][K] ~= Air and ((CX == CX0 and I == 1) or (CX == CX1 and I == 16)
+						or (CY == CY0 and J == 1) or (CY == CY1 and J == 16)
+						or (CZ == CZ0 and K == 1) or (CZ == CZ1 and K == 16)) then N += 1 end
+				end end end
+				return N
+			end
+
+			for CX = CX0, CX1 do
+				for CY = CY0, CY1 do
+					for CZ = CZ0, CZ1 do
+						local Lo = Vector3.new(CX * 64, CY * 64, CZ * 64)
+						local M, O = Terr:ReadVoxels(Region3.new(Lo, Lo + Vector3.new(64, 64, 64)), 4)
+						Edge += EdgeCount(M, CX, CY, CZ)
+						local S = EncChunk(M, O, Pal)
+						if S then
+							local K = CK(CX, CY, CZ)
+							Data[K] = S
+							Pos[K] = { CX, CY, CZ }
+						end
+						Done += 1
+						if os.clock() - TY > 0.05 then
+							task.wait()
+							TY = os.clock()
+							if TY - TP > 1 then
+								TP = TY
+								SetInfo(Label .. ": " .. Done .. "/" .. Total, Dim())
+							end
+						end
+					end
+				end
+			end
+			return Data, Pos, Edge, Total
+		end
+
+		-- ---------- файл ----------
+		local function BuildFile(Rg, Pal, Data, Pos)
+			local W = NewW()
+			PutS(W, "RBT1")
+			for I = 1, 6 do PutN(W, Rg[I], 4) end
+			PutN(W, #Pal.names, 2)
+			for _, N in ipairs(Pal.names) do PutB(W, #N); PutS(W, N) end
+			local Keys = {}
+			for K in pairs(Data) do table.insert(Keys, K) end
+			table.sort(Keys, function(A, B)
+				local PA, PB = Pos[A], Pos[B]
+				if PA[1] ~= PB[1] then return PA[1] < PB[1] end
+				if PA[2] ~= PB[2] then return PA[2] < PB[2] end
+				return PA[3] < PB[3]
+			end)
+			PutN(W, #Keys, 4)
+			for _, K in ipairs(Keys) do
+				local P, D = Pos[K], Data[K]
+				PutN(W, P[1], 2); PutN(W, P[2], 2); PutN(W, P[3], 2)
+				PutN(W, #D, 2)
+				PutS(W, D)
+			end
+			local Out = buffer.create(W.n)
+			buffer.copy(Out, 0, W.b, 0, W.n)
+			return Out
+		end
+
+		local function ParseFile(Buf)
+			if buffer.len(Buf) < 4 or buffer.readstring(Buf, 0, 4) ~= "RBT1" then
+				error("Terrain.voxels: неизвестный формат", 0)
+			end
+			local Rd = { b = Buf, p = 4 }
+			local Reg = {}
+			for I = 1, 6 do Reg[I] = GetN(Rd, 4, true) end
+			local Names = {}
+			for I = 1, GetN(Rd, 2) do
+				local L = GetB(Rd)
+				Names[I] = buffer.readstring(Buf, Rd.p, L)
+				Rd.p += L
+			end
+			local Data, Pos = {}, {}
+			for _ = 1, GetN(Rd, 4) do
+				local Cx, Cy, Cz = GetN(Rd, 2, true), GetN(Rd, 2, true), GetN(Rd, 2, true)
+				local L = GetN(Rd, 2)
+				local K = CK(Cx, Cy, Cz)
+				Data[K] = buffer.readstring(Buf, Rd.p, L)
+				Rd.p += L
+				Pos[K] = { Cx, Cy, Cz }
+			end
+			return { region = Reg, names = Names, data = Data, pos = Pos }
+		end
+
+		-- ---------- передача ----------
+		local function Upload(Buf)
+			local Z = ES:CompressBuffer(Buf, Enum.CompressionAlgorithm.Zstd, 3)
+			local B64 = buffer.tostring(ES:Base64Encode(Z))
+			local Parts = math.max(1, math.ceil(#B64 / TB64))
+			local Session = HttpService:GenerateGUID(false)
+			for I = 1, Parts do
+				SetInfo("Террейн: отправка " .. I .. "/" .. Parts, Dim())
+				local _, E = Call("/terrain/put" .. Q() .. "&session=" .. Session .. "&part=" .. I .. "&parts=" .. Parts,
+					{ data = string.sub(B64, (I - 1) * TB64 + 1, I * TB64) })
+				if E then error(E, 0) end
+			end
+			return buffer.len(Z)
+		end
+
+		local function Download()
+			local Got, Parts, I = {}, 1, 1
+			while I <= Parts do
+				local D, E = Call("/terrain/get" .. Q() .. "&part=" .. I)
+				if E then error(E, 0) end
+				Parts = D.parts
+				Got[I] = D.data
+				I += 1
+			end
+			local Raw = ES:Base64Decode(buffer.fromstring(table.concat(Got)))
+			return ES:DecompressBuffer(Raw, Enum.CompressionAlgorithm.Zstd)
+		end
+
+		-- ---------- действия ----------
+		local function NeedReady()
+			if RunService:IsRunning() then error("Остановите игру (Play) перед синхронизацией", 0) end
+			if not ES then error("EncodingService недоступен в этой Studio", 0) end
+		end
+
+		local RegionBox
+
+		local function TerrainPull()
+			NeedReady()
+			local Rg = ParseRegion(RegionBox.Text)
+			RegionBox.Text = RegionText(Rg)
+			plugin:SetSetting(TKey, RegionBox.Text)
+			local Pal = NewPal()
+			local Data, Pos, Edge, Total = ScanRegion(Rg, Pal, "Террейн: чтение")
+			local N = 0
+			for _ in pairs(Data) do N += 1 end
+			local Size = Upload(BuildFile(Rg, Pal, Data, Pos))
+			TPendingN = nil
+			local Str = string.format("Террейн сохранён: кусков с данными %d из %d, файл %d КБ", N, Total, Size // 1024)
+			local Lines = {}
+			if Edge > 0 then
+				Str ..= ". Террейн упирается в границу области"
+				Lines[1] = "! Вокселей на границе области: " .. Edge .. ". Террейн, вероятно, продолжается дальше — расширьте область и повторите Pull."
+			end
+			SetInfo(Str, Edge > 0 and Yellow or Green)
+			ShowLines(Lines)
+			Note({ Str })
+		end
+
+		local function Compare()
+			local F = ParseFile(Download())
+			local Pal = PalFromNames(F.names)
+			local Cur, CPos = ScanRegion(F.region, Pal, "Террейн: чтение")
+			local Res = { f = F, cur = Cur, cpos = CPos, pal = Pal, change = {}, add = 0, mod = 0, del = 0 }
+			for K, D in pairs(F.data) do
+				if Cur[K] ~= D then
+					table.insert(Res.change, K)
+					if Cur[K] then Res.mod += 1 else Res.add += 1 end
+				end
+			end
+			for K in pairs(Cur) do
+				if F.data[K] == nil then
+					table.insert(Res.change, K)
+					Res.del += 1
+				end
+			end
+			table.sort(Res.change)
+			return Res
+		end
+
+		local function TerrainPreview()
+			NeedReady()
+			local Res = Compare()
+			TPendingN = nil
+			local Total = #Res.change
+			if Total == 0 then
+				SetInfo("Террейн: изменений нет (область " .. RegionText(Res.f.region) .. ")", Green)
+				ShowLines({})
+				return
+			end
+			TPendingN = { add = Res.add, mod = Res.mod, del = Res.del }
+			local Lines = {}
+			for I, K in ipairs(Res.change) do
+				if I > 60 then break end
+				local P = Res.f.pos[K] or Res.cpos[K]
+				local Mark = Res.f.data[K] == nil and "-" or (Res.cur[K] and "~" or "+")
+				Lines[I] = string.format("%s Террейн, кусок 64 ст. с угла (%d, %d, %d)", Mark, P[1] * 64, P[2] * 64, P[3] * 64)
+			end
+			if Total > 60 then table.insert(Lines, "  … ещё кусков: " .. (Total - 60)) end
+			SetInfo(string.format("Террейн, предпросмотр: добавится %d, изменится %d, очистится %d кусков. Сохраните плейс и нажмите «Применить террейн».",
+				Res.add, Res.mod, Res.del), Yellow)
+			ShowLines(Lines)
+		end
+
+		local function TerrainApply()
+			if not TPendingN then error("Сначала «Террейн: Push» (предпросмотр)", 0) end
+			NeedReady()
+			local Res = Compare()
+			if Res.add ~= TPendingN.add or Res.mod ~= TPendingN.mod or Res.del ~= TPendingN.del then
+				TPendingN = nil
+				error("Террейн или файл изменились после предпросмотра. Повторите Push.", 0)
+			end
+			local Items = ItemsOf(Res.pal)
+			local Journal = { items = Items, list = {} }
+			local TY = os.clock()
+			local Ok, Err = pcall(function()
+				for I, K in ipairs(Res.change) do
+					local P = Res.f.pos[K] or Res.cpos[K]
+					table.insert(Journal.list, { P, Res.cur[K] })
+					WriteChunk(P, Res.f.data[K], Items)
+					if os.clock() - TY > 0.05 then
+						task.wait()
+						TY = os.clock()
+						SetInfo("Террейн: запись " .. I .. "/" .. #Res.change, Dim())
+					end
+				end
+			end)
+			TJournal = Journal
+			TPendingN = nil
+			if not Ok then error("Прервано: " .. tostring(Err) .. ". «Отменить террейн» вернёт уже записанное.", 0) end
+			local Str = string.format("Террейн применён: записано кусков %d (добавлено %d, изменено %d, очищено %d)",
+				#Res.change, Res.add, Res.mod, Res.del)
+			SetInfo(Str .. ". Можно «Отменить террейн».", Green)
+			ShowLines({})
+			Note({ Str })
+		end
+
+		local function TerrainUndoRun()
+			local J = TJournal
+			if not J then error("Нечего отменять", 0) end
+			local TY = os.clock()
+			for I = #J.list, 1, -1 do
+				WriteChunk(J.list[I][1], J.list[I][2], J.items)
+				if os.clock() - TY > 0.05 then task.wait(); TY = os.clock() end
+			end
+			TJournal = nil
+			TPendingN = nil
+			SetInfo("Террейн возвращён: кусков " .. #J.list, Green)
+			ShowLines({})
+		end
+
+		-- ===== Отладочная рамка области террейна =====
+		local RegionViz = {Folder = nil}
+
+		local function VizRegion(Text)
+			local N = {}
+			for V in string.gmatch(Text or "", "%-?%d+%.?%d*") do
+				N[#N + 1] = tonumber(V)
+			end
+			if #N < 6 then return nil end
+			local function Lo(A) return math.floor(A / 64) * 64 end
+			local function Hi(A) return math.ceil(A / 64) * 64 end
+			local Mn = Vector3.new(Lo(math.min(N[1], N[4])), Lo(math.min(N[2], N[5])), Lo(math.min(N[3], N[6])))
+			local Mx = Vector3.new(Hi(math.max(N[1], N[4])), Hi(math.max(N[2], N[5])), Hi(math.max(N[3], N[6])))
+			return Mn, Mx
+		end
+
+		function RegionViz.Clear()
+			if RegionViz.Folder then
+				RegionViz.Folder:Destroy()
+				RegionViz.Folder = nil
+			end
+		end
+
+		function RegionViz.Show(Mn, Mx)
+			RegionViz.Clear()
+			local Ok, Gui = pcall(function() return game:GetService("CoreGui") end)
+			if not Ok then return false end
+			local F = Instance.new("Folder")
+			F.Name = "RobloxBridge_Region"
+			local Size = Mx - Mn
+			local C = (Mn + Mx) / 2
+			local Edge = Color3.fromRGB(80, 170, 255)
+
+			local function Box(Pos, Sz, Transp, Top)
+				local A = Instance.new("BoxHandleAdornment")
+				A.Adornee = workspace.Terrain
+				A.AlwaysOnTop = Top
+				A.ZIndex = 1
+				A.Color3 = Edge
+				A.Transparency = Transp
+				A.Size = Sz
+				A.CFrame = CFrame.new(Pos)
+				A.Parent = F
+			end
+
+			Box(C, Size, 0.94, false) -- заливка
+			local T = 2               -- толщина рёбер
+			for _, Y in ipairs({Mn.Y, Mx.Y}) do
+				for _, Z in ipairs({Mn.Z, Mx.Z}) do
+					Box(Vector3.new(C.X, Y, Z), Vector3.new(Size.X, T, T), 0.1, true)
+				end
+			end
+			for _, X in ipairs({Mn.X, Mx.X}) do
+				for _, Z in ipairs({Mn.Z, Mx.Z}) do
+					Box(Vector3.new(X, C.Y, Z), Vector3.new(T, Size.Y, T), 0.1, true)
+				end
+				for _, Y in ipairs({Mn.Y, Mx.Y}) do
+					Box(Vector3.new(X, Y, C.Z), Vector3.new(T, T, Size.Z), 0.1, true)
+				end
+			end
+
+			F.Parent = Gui
+			RegionViz.Folder = F
+			return true
+		end
+
+		plugin.Unloading:Connect(RegionViz.Clear)
+
+		-- ---------- карточка ----------
+		local TC = Card(Root, 6)
+		TC.Visible = false
+		Text(TC, 1, "Террейн", { Bold = true, Size = 15 })
+		Text(TC, 2, "Отдельно от обычного Pull/Push. Область в студах «x0,y0,z0  x1,y1,z1», округляется до 64. Файл: Terrain.voxels в папке плейса.",
+			{ Color = C.Dim, Size = 12 })
+		RegionBox = Box(TC, 3, 28, false)
+		RegionBox.PlaceholderText = "x0,y0,z0  x1,y1,z1"
+		RegionBox.Text = plugin:GetSetting(TKey) or "-128,-512,-2112  832,0,-1088"
+		RegionBox.FocusLost:Connect(function() plugin:SetSetting(TKey, RegionBox.Text) end)
+		local TSel = Button(TC, 4, "Область из выделенной детали/модели", "link")
+		local VizBtn = Button(TC, 5, "👁 Показать область", "link")
+
+		local VizOn = false
+		local function RedrawViz()
+			if not VizOn then return end
+			local Mn, Mx = VizRegion(RegionBox.Text)
+			if not Mn then RegionViz.Clear() return end
+			RegionViz.Show(Mn, Mx)
+		end
+
+		Click(VizBtn, function()
+			VizOn = not VizOn
+			VizBtn.Text = VizOn and "👁 Скрыть область" or "👁 Показать область"
+			if VizOn then RedrawViz() else RegionViz.Clear() end
+		end)
+		RegionBox.FocusLost:Connect(RedrawViz)
+
+		local TRow = make("Frame", { LayoutOrder = 6, Size = UDim2.new(1, 0, 0, 52), BackgroundTransparency = 1 }, TC)
+		List(TRow, 6, Enum.FillDirection.Horizontal)
+		local TPull = Button(TRow, 1, "", "pull", UDim2.new(0.5, -3, 1, 0))
+		local TPush = Button(TRow, 2, "", "push", UDim2.new(0.5, -3, 1, 0))
+		TPull.RichText, TPush.RichText = true, true
+		TPull.Text = '<b>Studio → файл</b>\n<font size="11">Террейн · сохранить</font>'
+		TPush.Text = '<b>Файл → Studio</b>\n<font size="11">Террейн · предпросмотр</font>'
+		local TApply = Button(TC, 7, "✔ Применить террейн", "primary")
+		local TUndoBtn = Button(TC, 8, "↩ Отменить террейн", "normal")
+
+		local function TerrainButtons()
+			Enable(TSel, not Working)
+			Enable(TPull, not Working)
+			Enable(TPush, not Working)
+			TApply.Visible = TPendingN ~= nil
+			Enable(TApply, not Working)
+			TUndoBtn.Visible = TJournal ~= nil
+			Enable(TUndoBtn, not Working)
+		end
+		local PrevRefresh = RefreshButtons
+		RefreshButtons = function()
+			PrevRefresh()
+			TerrainButtons()
+		end
+		TerrainButtons()
+
+		State.T = {
+			Pull = function() Run("Террейн: Pull", TerrainPull) end,
+			Push = function() Run("Террейн: Push", TerrainPreview) end,
+			Apply = function() Run("Террейн: применяю", TerrainApply) end,
+			Undo = function() Run("Террейн: отмена", TerrainUndoRun) end,
+		}
+		Click(TPull, State.T.Pull)
+		Click(TPush, State.T.Push)
+		Click(TApply, State.T.Apply)
+		Click(TUndoBtn, State.T.Undo)
+
+		Click(TSel, function()
+			local S = Selection:Get()[1]
+			local CF, Sz
+			if S and S:IsA("BasePart") then CF, Sz = S.CFrame, S.Size
+			elseif S and S:IsA("Model") then CF, Sz = S:GetBoundingBox()
+			else SetInfo("Выделите деталь или модель вокруг террейна", Yellow); return end
+			local H = Sz / 2
+			local function Ext(A)
+				return math.abs(CF.RightVector[A]) * H.X + math.abs(CF.UpVector[A]) * H.Y + math.abs(CF.LookVector[A]) * H.Z
+			end
+			local P, EX, EY, EZ = CF.Position, Ext("X"), Ext("Y"), Ext("Z")
+			RegionBox.Text = string.format("%d,%d,%d  %d,%d,%d", math.floor(P.X - EX), math.floor(P.Y - EY), math.floor(P.Z - EZ),
+				math.ceil(P.X + EX), math.ceil(P.Y + EY), math.ceil(P.Z + EZ))
+			plugin:SetSetting(TKey, RegionBox.Text)
+			SetInfo("Область взята из «" .. S.Name .. "», при Pull округлится наружу до 64 студов.", Blue)
+			RedrawViz()
+		end)
+
+		task.spawn(function()
+			while true do
+				TC.Visible = State.Found and State.Place == "ready"
+				task.wait(0.5)
+			end
+		end)
+	end)()
+
 	-- ===== Карточка «Инструменты» =====
 	local ToolsCard = Card(Root, 5)
 	ToolsCard.Visible = false
@@ -1821,6 +2412,10 @@ do
 				return
 			end
 			Run("Применяю", DoApply)
+		elseif Cmd == "terrain-pull" then State.T.Pull()
+		elseif Cmd == "terrain-push" then State.T.Push()
+		elseif Cmd == "terrain-apply" then State.T.Apply()
+		elseif Cmd == "terrain-undo" then State.T.Undo()
 		end
 	end
 end

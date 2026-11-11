@@ -66,7 +66,7 @@ Workspace "Workspace" AirDensity=0.001 AirTurbulenceIntensity=0 AllowThirdPartyS
                 SpotLight "SL" Angle=60 Brightness=2 Face=Bottom Range=20
                 Smoke "Smoke" Size=4 Color=#AAAAAA Opacity=0.7 RiseVelocity=3
                 Sound "Snd" AudioContent="rbxassetid://9120386436" Looped PlaybackSpeed=1.5 RollOffMaxDistance=60 RollOffMode=Linear SoundGroup=@"Workspace/ClassTest/Effects/Group" SoundId="rbxassetid://9120386436" Volume=0.8
-                Sparkles "Sp" Color=#1C4A29 SparkleColor=#FFFF00
+                Sparkles "Sp" Color=#1C4A2900 SparkleColor=#FFFF00
                 SurfaceLight "SuL" Brightness=2 Face=Top
             }
             SoundGroup "Group" Volume=0.8
@@ -139,9 +139,9 @@ Workspace "Workspace" AirDensity=0.001 AirTurbulenceIntensity=0 AllowThirdPartyS
             ObjectValue "ToFolder" Value=@"Workspace/ClassTest/Joints"
             ObjectValue "ToService" Value=@"Workspace"
             ObjectValue "ToSlash" Value=@"Workspace/ClassTest/Values/A%2FB"
-            ObjectValue "ToTwin2" Value=@"Workspace/ClassTest/Values/Twin~2"
-            Part "Twin" Size=1,1,1 Anchored CFrame=0,3,50 Color=#999999
+            ObjectValue "ToTwin2" Value=@"Workspace/ClassTest/Values/Twin"
             Part "Twin" Size=1,1,1 Anchored CFrame=3,3,50 Color=#999999
+            Part "Twin" Size=1,1,1 Anchored CFrame=0,3,50 Color=#999999
             Vector3Value "V" Value=1,2,3
         }
     }
