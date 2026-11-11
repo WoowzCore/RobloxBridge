@@ -1,0 +1,7 @@
+Part "Lamp" Anchored Size=2,0.5,2 Color=#333333 Material=Metal CFrame=0,0.25,0 $Color=#FFAA00 $Brightness=3 {
+  Script "Logic" @code="print(script.Parent.Name, script.Parent:GetAttribute(\"Brightness\"))"
+  Part "Pole" Anchored Size=0.4,6,0.4 Color=#333333 Material=Metal CFrame=0,3.25,0
+  Part "Bulb" Anchored Shape=Ball Size=1.5,1.5,1.5 Color="{Color}" Material=Neon CFrame=0,6.8,0 {
+    PointLight "Light" Brightness="{Brightness}" Color="{Color}" Range=16
+  }
+}

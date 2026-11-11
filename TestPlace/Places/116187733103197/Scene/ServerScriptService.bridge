@@ -1,3 +1,4 @@
 ServerScriptService "ServerScriptService" {
-    Script "DayCycle" @src="Scripts/ServerScriptService/DayCycle.lua"
+    Script "ObbyManager" @src="Scripts/ServerScriptService/ObbyManager.lua"
+    Script "LeaderboardService" @src="Scripts/ServerScriptService/LeaderboardService.lua"
 }

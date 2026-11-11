@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using WLO;
 using WLO.Math;
 
@@ -653,8 +654,19 @@ public static class Pull{
         if(Prob.Count > 0){ throw new InvalidOperationException("Файлы сцены не читаются, Pull остановлен: " + string.Join("; ", Prob.Take(5))); }
 
         HashSet<string> Names = [..Fresh.Select(F => F.Name)];
-        List<BridgeNode> OldView = [..Bridge.Filter(Old, Place.Services, Place.Ignore)];
+
+        // вторая копия сцены с развёрнутыми префабами: только для сравнения со Studio
+        string PRoot = Prefabs.ProjectRoot(PlaceDir);
+        List<BridgeNode> OldFull = Bridge.ReadScene(PlaceDir, Prob);
+        Prefabs.Expand(OldFull, PRoot, Prob);
+        if(Prob.Count > 0){ throw new InvalidOperationException("Префабы не читаются, Pull остановлен: " + string.Join("; ", Prob.Take(5))); }
+
+        List<BridgeNode> OldView = [..Bridge.Filter(OldFull, Place.Services, Place.Ignore)];
         List<DiffOp> Ops = Diff.Compute(OldView.Where(O => Names.Contains(O.Name)), Fresh);
+
+        // объекты с _prefab превращаются обратно в одну строку (после того, как diff посчитан)
+        List<string> PrefabWarn = [];
+        Prefabs.Collapse(Fresh, "", PRoot, PrefabWarn);
 
         // Сервисы, которых нет в запросе, берём с диска как есть
         List<BridgeNode> All = [..Old.Where(O => !Names.Contains(O.Name)), ..Fresh];
@@ -675,6 +687,7 @@ public static class Pull{
         if(Warn.Count > 0){ Text += ". Замечаний: " + Warn.Count; }
 
         List<string> Lines = Diff.Render(Ops);
+        Lines.AddRange(PrefabWarn.Select(W => W.StartsWith(" ") ? W : "! " + W));
         return new SyncReply{ Text = Text, Lines = Lines, Body = new{ status = "ok", text = Text, lines = Lines } };
     }
 
@@ -755,7 +768,9 @@ public static class Push{
         List<BridgeNode> Studio = Pull.ReadStudio(Doc.RootElement, Place, out int _);
 
         List<string> Prob = [];
-        List<BridgeNode> Disk = [..Bridge.Filter(Bridge.ReadScene(PlaceDir, Prob), Place.Services, Place.Ignore)];
+        List<BridgeNode> Scene = Bridge.ReadScene(PlaceDir, Prob);
+        Prefabs.Expand(Scene, Prefabs.ProjectRoot(PlaceDir), Prob);
+        List<BridgeNode> Disk = [..Bridge.Filter(Scene, Place.Services, Place.Ignore)];
         if(Prob.Count > 0){ throw new InvalidOperationException("Файлы сцены не читаются: " + string.Join("; ", Prob.Take(5))); }
         if(Disk.Count == 0){ throw new InvalidOperationException("В папке плейса нет файлов сцены. Сначала сделай Pull."); }
 
@@ -1097,6 +1112,300 @@ public static class Live{
 
     public static void Send(string Cmd){ __Cmds.Enqueue(Cmd); }
     public static string? TakeCommand(){ return __Cmds.TryDequeue(out string? C) ? C : null; }
+}
+
+// Префабы: шаблон лежит в Prefabs/*.bridge (корень проекта), экземпляр - объект с атрибутом $_prefab="Prefabs/Имя.bridge"
+public static class Prefabs{
+    public const string Attr = "_prefab";
+
+    private static readonly string[] __PosKeys = ["CFrame", "Pivot", "Position"];
+    private static readonly Regex    __Slot    = new(@"\{([A-Za-z0-9_]+)\}");
+
+    public static string ProjectRoot(string PlaceDir){
+        return System.IO.Path.GetFullPath(System.IO.Path.Combine(PlaceDir, "..", ".."));
+    }
+
+    // ---------------------------------------------------------------- Push: развернуть экземпляры в полные деревья
+
+    public static void Expand(List<BridgeNode> Level, string Root, List<string> Problems){
+        for(int I = 0; I < Level.Count; I++){
+            BridgeNode  N    = Level[I];
+            BridgeProp? Mark = N.Attrs.Find(A => A.Key == Attr);
+
+            if(Mark == null){ Expand(N.Children, Root, Problems); continue; }
+
+            string      Where = N.Origin.Length > 0 ? N.Origin : N.Name;
+            BridgeNode? T     = __Load(Root, Mark.Value, Where, Problems);
+            if(T != null){ Level[I] = __Apply(N, T, Where, Problems); }
+        }
+    }
+
+    // ---------------------------------------------------------------- Pull: свернуть обратно в одну строку
+
+    public static void Collapse(List<BridgeNode> Level, string Parent, string Root, List<string> Warn){
+        for(int I = 0; I < Level.Count; I++){
+            BridgeNode N  = Level[I];
+            string     At = Parent.Length == 0 ? N.Name : Parent + "/" + N.Name;
+
+            if(N.Attrs.Any(A => A.Key == Attr)){ Level[I] = __Fold(N, At, Root, Warn); }
+            else{                                Collapse(N.Children, At, Root, Warn); }
+        }
+    }
+
+    private static BridgeNode __Fold(BridgeNode N, string At, string Root, List<string> Warn){
+        BridgeProp   Mark = N.Attrs.First(A => A.Key == Attr);
+        List<string> Prob = [];
+
+        BridgeNode? T = __Load(Root, Mark.Value, At, Prob);
+        if(T == null){ return __Unlink(N, At, Root, Warn, string.Join("; ", Prob)); }
+        if(N.Class != T.Class){ return __Unlink(N, At, Root, Warn, $"класс {N.Class} не совпадает с корнем шаблона ({T.Class})"); }
+
+        string?     Key = __PosKey(T);
+        BridgeProp? NP  = Key == null ? null : N.Get(Key);
+
+        if(Key != null && NP != null && !__SameRot(NP.Value, T.Get(Key)!.Value)){
+            return __Unlink(N, At, Root, Warn, "объект повёрнут, а повороты префабов пока не поддерживаются");
+        }
+
+        // как выглядел бы объект строго по шаблону с его параметрами
+        BridgeNode Probe = new(){ Class = N.Class, Name = N.Name, Origin = At };
+        if(NP != null){ Probe.Props.Add(NP); }
+        foreach(BridgeProp A in N.Attrs){ Probe.Attrs.Add(A); }
+        BridgeNode E = __Apply(Probe, __Clone(T), At, Prob);
+        if(Prob.Count > 0){ return __Unlink(N, At, Root, Warn, string.Join("; ", Prob)); }
+
+        // строка экземпляра: только отличия от шаблона
+        BridgeNode Row = new(){ Class = N.Class, Name = N.Name, Origin = At, Tags = [..N.Tags.Where(G => !T.Tags.Contains(G))] };
+
+        if(Key != null && NP != null && !__Same(NP, T.Get(Key)!)){ Row.Props.Add(new BridgeProp(NP.Key, NP.Value, NP.Kind)); }
+        if(Key == "CFrame" && NP == null){ Row.Props.Add(new BridgeProp("CFrame", "0,0,0")); }   // нулевая позиция в Studio не присылается
+
+        foreach(BridgeProp P in N.Props){
+            if(Array.IndexOf(__PosKeys, P.Key) >= 0){ continue; }
+
+            BridgeProp? EP = E.Get(P.Key);
+            if(EP == null || !__Same(P, EP)){ Row.Props.Add(new BridgeProp(P.Key, P.Value, P.Kind)); }
+        }
+
+        foreach(BridgeProp A in N.Attrs){
+            BridgeProp? TA = T.Attrs.Find(X => X.Key == A.Key);
+            if(A.Key == Attr || TA == null || !__Same(A, TA)){ Row.Attrs.Add(new BridgeProp(A.Key, A.Value, A.Kind)); }
+        }
+
+        // дети: если в Studio их меняли руками, в файл это не попадёт
+        BridgeNode X2 = __Apply(Row, __Clone(T), At, Prob);
+        if(Prob.Count > 0){ return __Unlink(N, At, Root, Warn, string.Join("; ", Prob)); }
+
+        List<DiffOp> Ops = Diff.Compute(N.Children, X2.Children);
+        if(Ops.Count > 0){
+            Warn.Add($"{At}: изменено внутри префаба, в файл не попадёт (чтобы сохранить - «Отвязать»: удали атрибут {Attr} у корня в Studio)");
+            foreach(string L in Diff.Render(Ops, 4)){ Warn.Add("   " + L); }
+        }
+
+        return Row;
+    }
+
+    private static BridgeNode __Unlink(BridgeNode N, string At, string Root, List<string> Warn, string Why){
+        N.Attrs.RemoveAll(A => A.Key == Attr);
+        Collapse(N.Children, At, Root, Warn);
+        Warn.Add($"{At}: {Why}. Записан полным деревом, связь с префабом снята");
+        return N;
+    }
+
+    // ---------------------------------------------------------------- шаблон
+
+    private static BridgeNode? __Load(string Root, string Rel, string Where, List<string> Problems){
+        string? Full = __Safe(Root, Rel);
+        if(Full == null){        Problems.Add($"{Where}: недопустимый путь префаба \"{Rel}\""); return null; }
+        if(!File.Exists(Full)){  Problems.Add($"{Where}: префаб не найден: {Rel}");             return null; }
+
+        List<string>     Own = [];
+        List<BridgeNode> T   = Bridge.Parse(File.ReadAllText(Full), Rel, Own);
+
+        if(Own.Count == 0 && T.Count != 1){ Own.Add($"{Rel}: в шаблоне нужен ровно один корневой объект (сейчас {T.Count})"); }
+        if(Own.Count == 0){ __Files(T[0], System.IO.Path.GetDirectoryName(Full)!, Root, Own); }
+
+        if(Own.Count > 0){ Problems.AddRange(Own); return null; }
+        return T[0];
+    }
+
+    // @src в шаблоне - путь от папки шаблона
+    private static void __Files(BridgeNode N, string Dir, string Root, List<string> Own){
+        if(N.AtFile != null){ Own.Add($"{N.Origin}: @file в префабе не поддерживается"); N.AtFile = null; }
+        if(N.Attrs.Any(A => A.Key == Attr)){ Own.Add($"{N.Origin}: вложенные префабы пока не поддерживаются"); }
+
+        if(N.AtSrc != null){
+            string Full = System.IO.Path.GetFullPath(System.IO.Path.Combine(Dir, N.AtSrc));
+            string Rel  = System.IO.Path.GetRelativePath(Root, Full);
+
+            if(System.IO.Path.IsPathRooted(N.AtSrc) || Rel.StartsWith("..") || !File.Exists(Full)){
+                Own.Add($"{N.Origin}: файл @src не найден или вне проекта: {N.AtSrc}");
+            }else{
+                N.Props.RemoveAll(X => X.Key == "Source");
+                N.Props.Add(new BridgeProp("Source", File.ReadAllText(Full), BridgeKind.Str));
+            }
+            N.AtSrc = null;
+        }
+
+        foreach(BridgeNode C in N.Children){ __Files(C, Dir, Root, Own); }
+    }
+
+    // Подставляет параметры, сдвигает позицию, накладывает строку экземпляра. T портится.
+    private static BridgeNode __Apply(BridgeNode Row, BridgeNode T, string At, List<string> Problems){
+        if(Row.Class != T.Class){ Problems.Add($"{At}: класс {Row.Class} не совпадает с корнем шаблона ({T.Class})"); }
+        if(Row.Children.Count > 0){ Problems.Add($"{At}: у экземпляра префаба не может быть вложенных объектов"); }
+
+        // параметры: атрибуты корня шаблона, поверх них - атрибуты строки
+        Dictionary<string, BridgeProp> Par = [];
+        foreach(BridgeProp A in T.Attrs){   Par[A.Key] = A; }
+        foreach(BridgeProp A in Row.Attrs){ Par[A.Key] = A; }
+        __Subst(T, Par);
+
+        string? Key = __PosKey(T);
+
+        foreach(BridgeProp P in Row.Props){
+            if(Array.IndexOf(__PosKeys, P.Key) >= 0 && P.Key != Key){
+                Problems.Add($"{At}: у корня шаблона нет {P.Key} (ожидается {Key ?? "CFrame или Pivot"})");
+            }
+        }
+
+        BridgeProp? RowPos = Key == null ? null : Row.Get(Key);
+        if(Key != null && RowPos != null){
+            BridgeProp TP   = T.Get(Key)!;
+            double[]?  From = __Pos(TP.Value), To = __Pos(RowPos.Value);
+
+            if(From == null || To == null){
+                Problems.Add($"{At}: {Key} должен быть вида x,y,z");
+            }else{
+                if(!__SameRot(RowPos.Value, TP.Value)){ Problems.Add($"{At}: поворот экземпляра пока не поддерживается (уберите часть после |)"); }
+
+                double[] D = [To[0] - From[0], To[1] - From[1], To[2] - From[2]];
+                if(D.Any(V => Math.Abs(V) > 0.0005)){ __Shift(T, D); }
+            }
+        }
+
+        T.Name   = Row.Name;
+        T.Origin = Row.Origin;
+
+        foreach(BridgeProp P in Row.Props){
+            if(Array.IndexOf(__PosKeys, P.Key) >= 0){ continue; }
+            T.Props.RemoveAll(X => X.Key == P.Key);
+            T.Props.Add(new BridgeProp(P.Key, P.Value, P.Kind));
+        }
+        foreach(BridgeProp A in Row.Attrs){
+            T.Attrs.RemoveAll(X => X.Key == A.Key);
+            T.Attrs.Add(new BridgeProp(A.Key, A.Value, A.Kind));
+        }
+        foreach(string G in Row.Tags){ if(!T.Tags.Contains(G)){ T.Tags.Add(G); } }
+
+        return T;
+    }
+
+    private static void __Subst(BridgeNode N, Dictionary<string, BridgeProp> Par){
+        foreach(BridgeProp P in N.Props){ __SubstProp(P, Par); }
+        foreach(BridgeProp P in N.Attrs){ __SubstProp(P, Par); }
+        foreach(BridgeNode C in N.Children){ __Subst(C, Par); }
+    }
+
+    // "{Имя}" целиком - берём значение и тип параметра; внутри строки - подставляем текстом. Source не трогаем.
+    private static void __SubstProp(BridgeProp P, Dictionary<string, BridgeProp> Par){
+        if(P.Kind != BridgeKind.Str || P.Key == "Source" || !P.Value.Contains('{')){ return; }
+
+        Match M = __Slot.Match(P.Value);
+        if(M.Success && M.Value == P.Value && Par.TryGetValue(M.Groups[1].Value, out BridgeProp? Whole)){
+            P.Value = Whole.Value;
+            P.Kind  = Whole.Kind;
+            return;
+        }
+
+        P.Value = __Slot.Replace(P.Value, X => Par.TryGetValue(X.Groups[1].Value, out BridgeProp? V) ? V.Value : X.Value);
+    }
+
+    // ---------------------------------------------------------------- позиция
+
+    private static string? __PosKey(BridgeNode T){
+        foreach(string K in __PosKeys){
+            BridgeProp? P = T.Get(K);
+            if(P != null && P.Kind == BridgeKind.Raw && __Pos(P.Value) != null){ return K; }
+        }
+        return null;
+    }
+
+    private static double[]? __Pos(string V){
+        string[] H = V.Split('|')[0].Split(',');
+        if(H.Length != 3){ return null; }
+
+        double[] R = new double[3];
+        for(int I = 0; I < 3; I++){
+            if(!double.TryParse(H[I], NumberStyles.Float, CultureInfo.InvariantCulture, out R[I])){ return null; }
+        }
+        return R;
+    }
+
+    private static double[] __Rot(string V){
+        int I = V.IndexOf('|');
+        if(I < 0){ return []; }
+        return V[(I + 1)..].Split(',').Select(S => double.TryParse(S, NumberStyles.Float, CultureInfo.InvariantCulture, out double D) ? D : 0).ToArray();
+    }
+
+    private static bool __SameRot(string A, string B){
+        double[] X = __Rot(A), Y = __Rot(B);
+        int N = Math.Max(X.Length, Y.Length);
+
+        for(int I = 0; I < N; I++){
+            double P = I < X.Length ? X[I] : 0, Q = I < Y.Length ? Y[I] : 0;
+            if(Math.Abs(P - Q) > 0.01){ return false; }
+        }
+        return true;
+    }
+
+    // Attachment/Bone лежат в локальных координатах - их не двигаем
+    private static void __Shift(BridgeNode N, double[] D){
+        if(N.Class != "Attachment" && N.Class != "Bone"){
+            foreach(string K in __PosKeys){
+                BridgeProp? P = N.Get(K);
+                if(P == null || P.Kind != BridgeKind.Raw){ continue; }
+
+                double[]? V = __Pos(P.Value);
+                if(V == null){ continue; }
+
+                int    Bar  = P.Value.IndexOf('|');
+                string Rest = Bar < 0 ? "" : P.Value.Substring(Bar);
+                P.Value = Bridge.Num(V[0] + D[0]) + "," + Bridge.Num(V[1] + D[1]) + "," + Bridge.Num(V[2] + D[2]) + Rest;
+            }
+        }
+        foreach(BridgeNode C in N.Children){ __Shift(C, D); }
+    }
+
+    // ---------------------------------------------------------------- мелочи
+
+    private static BridgeNode __Clone(BridgeNode N){
+        return new BridgeNode{
+            Class = N.Class, Name = N.Name, Origin = N.Origin,
+            Props = N.Props.Select(P => new BridgeProp(P.Key, P.Value, P.Kind)).ToList(),
+            Attrs = N.Attrs.Select(P => new BridgeProp(P.Key, P.Value, P.Kind)).ToList(),
+            Tags  = [..N.Tags],
+            Children = N.Children.Select(__Clone).ToList()
+        };
+    }
+
+    private static bool __Same(BridgeProp A, BridgeProp B){
+        if(A.Kind != B.Kind){ return false; }
+        return A.Kind == BridgeKind.Raw ? __Norm(A.Value) == __Norm(B.Value) : A.Value == B.Value;
+    }
+
+    private static string __Norm(string V){
+        return string.Join(",", V.Split('|', ',').Select(S =>
+            double.TryParse(S, NumberStyles.Float, CultureInfo.InvariantCulture, out double D) ? Bridge.Num(D) : S.ToUpperInvariant()));
+    }
+
+    private static string? __Safe(string Root, string Rel){
+        if(string.IsNullOrWhiteSpace(Rel) || System.IO.Path.IsPathRooted(Rel)){ return null; }
+
+        string Full   = System.IO.Path.GetFullPath(System.IO.Path.Combine(Root, Rel));
+        string Prefix = Root.TrimEnd(System.IO.Path.DirectorySeparatorChar) + System.IO.Path.DirectorySeparatorChar;
+        return Full.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase) ? Full : null;
+    }
 }
 
     // ----------------------------------------------------------------------
