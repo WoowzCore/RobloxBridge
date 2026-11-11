@@ -72,85 +72,6 @@ Workspace "Workspace" AirDensity=0.001 AirTurbulenceIntensity=0 AllowThirdPartyS
             Part "Post R" Size=0.4,3.6,0.4 Anchored CFrame=42.2,1.8,34.2 Color=#6B4423 Material=Wood
         }
     }
-    Model "Drooling Zombie" #"SoldierEnemy" #"ZombieFriend" {
-        Script "Animate" @src="Scripts/Workspace/Drooling Zombie/Animate.lua" {
-            StringValue "climb" {
-                Animation "ClimbAnim" AnimationContent="http://www.roblox.com/asset/?id=125750800"
-            }
-            StringValue "fall" {
-                Animation "FallAnim" AnimationContent="http://www.roblox.com/asset/?id=125750759"
-            }
-            StringValue "idle" {
-                Animation "Animation1" AnimationContent="http://www.roblox.com/asset/?id=125750544" {
-                    NumberValue "Weight" Value=9
-                }
-                Animation "Animation2" AnimationContent="http://www.roblox.com/asset/?id=125750618" {
-                    NumberValue "Weight" Value=1
-                }
-            }
-            StringValue "jump" {
-                Animation "JumpAnim" AnimationContent="http://www.roblox.com/asset/?id=125750702"
-            }
-            StringValue "run" {
-                Animation "RunAnim" AnimationContent="http://www.roblox.com/asset/?id=125749145"
-            }
-            StringValue "toolnone" {
-                Animation "ToolNoneAnim" AnimationContent="http://www.roblox.com/asset/?id=125750867"
-            }
-            StringValue "walk" {
-                Animation "WalkAnim" AnimationContent="http://www.roblox.com/asset/?id=125749145"
-            }
-        }
-        Configuration "Animations" {
-            Animation "Arms" AnimationContent="http://www.roblox.com/asset/?id=183294396"
-            Animation "Attack" AnimationContent="http://www.roblox.com/asset/?id=180416148"
-        }
-        BillboardGui "BillboardGui" Size=0,100,0,30 StudsOffset=0,5,0 {
-            TextLabel "TextLabel" Size=1,0,1,0 BackgroundColor3=#FFFFFF Text="Idle" TextSize=24 Visible=false
-        }
-        BodyColors "Body Colors" HeadColor3=#3A7D15 LeftArmColor3=#27462D LeftLegColor3=#27462D RightArmColor3=#27462D RightLegColor3=#27462D TorsoColor3=#27462D
-        Configuration "Configurations" {
-            IntValue "AggroRange" Value=200
-            IntValue "Damage" Value=30
-            BoolValue "Debug"
-            IntValue "FieldOfView" Value=180
-        }
-        Part "Head" Size=2,1,1 BottomSurface=Smooth CFrame=-71.503,4.5,-86.962|-180,0,-180 Color=#3A7D15 Material=WoodPlanks TopSurface=Smooth {
-            Decal "Face" TextureContent="rbxassetid://7074882"
-            SpecialMesh "Mesh" Scale=1.25,1.25,1.25
-        }
-        Humanoid "Humanoid" WalkSpeed=10
-        Part "HumanoidRootPart" Size=2,2,1 BottomSurface=Smooth CFrame=-71.503,3,-86.962|-180,0,-180 Color=#27462D Material=WoodPlanks TopSurface=Smooth Transparency=1 {
-            BodyForce "RepulsionForce" Force=0,0,0
-            Motor6D "Root Hip" C0=0,0,0|-90,0,-180 C1=0,0,0|-90,0,-180 MaxVelocity=0.1
-        }
-        Part "Left Arm" Size=1,2,1 BottomSurface=Smooth CFrame=-70.003,3,-86.962|-180,0,-180 CanCollide=false Color=#27462D Material=WoodPlanks TopSurface=Smooth
-        Part "Left Leg" Size=1,2,1 BottomSurface=Smooth CFrame=-71.003,1,-86.962|-180,0,-180 CanCollide=false Color=#27462D Material=WoodPlanks TopSurface=Smooth
-        Sound "Moan" PlaybackSpeed=0.15 Volume=0.05
-        Configuration "ModuleScripts" {
-            ModuleScript "ROBLOX_AIUtilities" @src="Scripts/Workspace/Drooling Zombie/ModuleScripts/ROBLOX_AIUtilities.lua"
-            ModuleScript "ROBLOX_DestroyService" @src="Scripts/Workspace/Drooling Zombie/ModuleScripts/ROBLOX_DestroyService.lua"
-            ModuleScript "ROBLOX_HumanoidList" @src="Scripts/Workspace/Drooling Zombie/ModuleScripts/ROBLOX_HumanoidList.lua"
-            ModuleScript "ROBLOX_PathfindingLibrary" @src="Scripts/Workspace/Drooling Zombie/ModuleScripts/ROBLOX_PathfindingLibrary.lua"
-            ModuleScript "ROBLOX_StateMachine" @src="Scripts/Workspace/Drooling Zombie/ModuleScripts/ROBLOX_StateMachine.lua"
-            ModuleScript "ROBLOX_ZombieAI" @src="Scripts/Workspace/Drooling Zombie/ModuleScripts/ROBLOX_ZombieAI.lua"
-        }
-        Part "Right Arm" Size=1,2,1 BottomSurface=Smooth CFrame=-73.003,3,-86.962|-180,0,-180 CanCollide=false Color=#27462D Material=WoodPlanks TopSurface=Smooth
-        Part "Right Leg" Size=1,2,1 BottomSurface=Smooth CFrame=-72.003,1,-86.962|-180,0,-180 CanCollide=false Color=#27462D Material=WoodPlanks TopSurface=Smooth
-        Script "Script" @src="Scripts/Workspace/Drooling Zombie/Script.lua"
-        Part "Torso" Size=2,2,1 BottomSurface=Smooth CFrame=-71.503,3,-86.962|-180,0,-180 Color=#27462D Material=WoodPlanks TopSurface=Smooth {
-            Motor6D "Left Hip" C0=-1,-1,0|0,-90,0 C1=-0.5,1,0|0,-90,0 MaxVelocity=0.1
-            Motor6D "Left Shoulder" C0=-1,0.5,0|0,-90,0 C1=0.5,0.5,0|0,-90,0 MaxVelocity=0.1
-            Motor6D "Neck" C0=0,1,0|-90,0,-180 C1=0,-0.5,0|-90,0,-180 MaxVelocity=0.1
-            Motor6D "Right Hip" C0=1,-1,0|0,90,0 C1=0.5,1,0|0,90,0 MaxVelocity=0.1
-            Motor6D "Right Shoulder" C0=1,0.5,0|0,90,0 C1=-0.5,0.5,0|0,90,0 MaxVelocity=0.1
-        }
-        CharacterMesh "Zombie Left Arm" BodyPart=LeftArm MeshContent="rbxassetid://37683097" MeshId=37683097 OverlayTextureContent="rbxassetid://37686282" OverlayTextureId=37686282
-        CharacterMesh "Zombie Left Leg" BodyPart=LeftLeg MeshContent="rbxassetid://37683150" MeshId=37683150 OverlayTextureContent="rbxassetid://37687646" OverlayTextureId=37687646
-        CharacterMesh "Zombie Right Arm" BodyPart=RightArm MeshContent="rbxassetid://37683174" MeshId=37683174 OverlayTextureContent="rbxassetid://37686282" OverlayTextureId=37686282
-        CharacterMesh "Zombie Right Leg" BodyPart=RightLeg MeshContent="rbxassetid://37683227" MeshId=37683227 OverlayTextureContent="rbxassetid://37687646" OverlayTextureId=37687646
-        CharacterMesh "Zombie torso" BodyPart=Torso MeshContent="rbxassetid://37683263" MeshId=37683263 OverlayTextureContent="rbxassetid://37686282" OverlayTextureId=37686282
-    }
     Model "Magic Crystal" $Charge=100 $State="idle" {
         Part "Base Ring" Size=5,0.4,5 Anchored CFrame=106.192,3.1,12.616 Color=#7B5CFF Material=Neon Shape=Cylinder Transparency=0.2
         Part "Core" Size=2.5,3.5,2.5 Anchored CFrame=106.192,5,12.616 CanCollide=false Color=#7B5CFF Material=Neon Shape=Ball Transparency=0.15 {
@@ -200,5 +121,179 @@ Workspace "Workspace" AirDensity=0.001 AirTurbulenceIntensity=0 AllowThirdPartyS
         Model "Shapes Station" @file="Scene/Workspace/Test Lobby/Shapes Station.bridge"
         Model "Spiral Stairs" @file="Scene/Workspace/Test Lobby/Spiral Stairs.bridge"
         Model "Welcome Sign" @file="Scene/Workspace/Test Lobby/Welcome Sign.bridge"
+    }
+	    Model "Coin Rush" $Coins=25 $Duration=30 {
+      Part "Arena Floor" Anchored CFrame=150,0.5,0 Color=#2F3B2F Material=Slate Size=60,1,60
+      Part "Wall N" Anchored CFrame=150,7,-30.5 Color=#8FB8FF Material=Glass Size=62,12,1 Transparency=0.6
+      Part "Wall S" Anchored CFrame=150,7,30.5 Color=#8FB8FF Material=Glass Size=62,12,1 Transparency=0.6
+      Part "Wall E" Anchored CFrame=180.5,7,0 Color=#8FB8FF Material=Glass Size=1,12,60 Transparency=0.6
+      Part "Wall W" Anchored CFrame=119.5,7,0 Color=#8FB8FF Material=Glass Size=1,12,60 Transparency=0.6
+      Part "Pillar NE" Anchored CFrame=178,7,-28 Color=#5A4A3A Material=Brick Size=2,12,2
+      Part "Pillar NW" Anchored CFrame=122,7,-28 Color=#5A4A3A Material=Brick Size=2,12,2
+      Part "Pillar SE" Anchored CFrame=178,7,28 Color=#5A4A3A Material=Brick Size=2,12,2
+      Part "Pillar SW" Anchored CFrame=122,7,28 Color=#5A4A3A Material=Brick Size=2,12,2
+      Part "Lamp NE" Anchored CFrame=178,14.2,-28 Color=#FFD27F Material=Neon Shape=Ball Size=2.4,2.4,2.4 {
+        PointLight "Light" Brightness=3 Color=#FFD27F Range=28
+      }
+      Part "Lamp NW" Anchored CFrame=122,14.2,-28 Color=#FFD27F Material=Neon Shape=Ball Size=2.4,2.4,2.4 {
+        PointLight "Light" Brightness=3 Color=#FFD27F Range=28
+      }
+      Part "Lamp SE" Anchored CFrame=178,14.2,28 Color=#FFD27F Material=Neon Shape=Ball Size=2.4,2.4,2.4 {
+        PointLight "Light" Brightness=3 Color=#FFD27F Range=28
+      }
+      Part "Lamp SW" Anchored CFrame=122,14.2,28 Color=#FFD27F Material=Neon Shape=Ball Size=2.4,2.4,2.4 {
+        PointLight "Light" Brightness=3 Color=#FFD27F Range=28
+      }
+      Part "Start Pad" Anchored CFrame=108,0.5,0|0,0,90 Color=#2ECC71 Material=Neon Shape=Cylinder Size=1,9,9 {
+        ProximityPrompt "Prompt" ActionText="Старт" HoldDuration=0.4 MaxActivationDistance=10 ObjectText="Coin Rush"
+      }
+      Part "Board" Anchored CFrame=108,4,-12|0,180,0 Color=#14142B Size=16,8,1 {
+        SurfaceGui "Gui" {
+          TextLabel "Text" BackgroundTransparency=1 Size=1,0,1,0 Text="COIN RUSH\nВстань на зелёную площадку и нажми E" TextColor3=#FFE066 TextScaled
+        }
+      }
+      Script "Hello" @code="print(\"[Coin Rush] зона загружена\")"
+      Script "Game" @code=<<<
+        local Players = game:GetService("Players")
+        local RunService = game:GetService("RunService")
+
+        local Zone = script.Parent
+        local Floor = Zone:WaitForChild("Arena Floor")
+        local Pad = Zone:WaitForChild("Start Pad")
+        local Prompt = Pad:WaitForChild("Prompt")
+        local Label = Zone:WaitForChild("Board"):WaitForChild("Gui"):WaitForChild("Text")
+
+        local Duration = Zone:GetAttribute("Duration") or 30
+        local CoinCount = Zone:GetAttribute("Coins") or 25
+        local GoldChance = 0.15
+
+        local Green = Color3.fromRGB(46, 204, 113)
+        local Red = Color3.fromRGB(231, 76, 60)
+        local Silver = Color3.fromRGB(190, 215, 255)
+        local Gold = Color3.fromRGB(255, 200, 30)
+
+        local CoinsFolder = Instance.new("Folder")
+        CoinsFolder.Name = "Coins"
+        CoinsFolder.Parent = Zone
+
+        local Running, Current, Score, EndTime = false, nil, 0, 0
+        local Coins = {}
+        local Best, BestName = 0, ""
+        local Finish
+
+        local function SetBoard(Text)
+          Label.Text = Text
+        end
+
+        local function IdleBoard()
+          local Record = "Рекорда пока нет"
+          if Best > 0 then Record = string.format("Рекорд: %s — %d", BestName, Best) end
+          SetBoard("COIN RUSH\nВстань на зелёную площадку и нажми E\n" .. Record)
+        end
+
+        local function RandomSpot()
+          local Half = Floor.Size * 0.5
+          local X = (math.random() * 2 - 1) * (Half.X - 4)
+          local Z = (math.random() * 2 - 1) * (Half.Z - 4)
+          local Top = Floor.Position.Y + Half.Y
+          return Vector3.new(Floor.Position.X + X, Top + 2.5, Floor.Position.Z + Z)
+        end
+
+        local function AddCoin()
+          local Big = math.random() < GoldChance
+          local Part = Instance.new("Part")
+          Part.Name = Big and "Gold Coin" or "Coin"
+          Part.Shape = Enum.PartType.Cylinder
+          Part.Size = Big and Vector3.new(0.4, 3.5, 3.5) or Vector3.new(0.3, 2.5, 2.5)
+          Part.Color = Big and Gold or Silver
+          Part.Material = Enum.Material.Neon
+          Part.Anchored = true
+          Part.CanCollide = false
+          Part.CanTouch = false
+          Part.Parent = CoinsFolder
+          table.insert(Coins, { Part = Part, Pos = RandomSpot(), Phase = math.random() * 6.28, Value = Big and 5 or 1 })
+        end
+
+        RunService.Heartbeat:Connect(function()
+          if not Running then return end
+          local Char = Current and Current.Character
+          local Root = Char and Char:FindFirstChild("HumanoidRootPart")
+          local Hum = Char and Char:FindFirstChildOfClass("Humanoid")
+          if not Root or not Hum or Hum.Health <= 0 then
+            Finish()
+            return
+          end
+          local T = os.clock()
+          for I = #Coins, 1, -1 do
+            local C = Coins[I]
+            local P = C.Pos + Vector3.new(0, math.sin(T * 3 + C.Phase) * 0.4, 0)
+            C.Part.CFrame = CFrame.new(P) * CFrame.Angles(0, T * 2 + C.Phase, 0)
+            if (Root.Position - P).Magnitude < 4 then
+              Score += C.Value
+              C.Part:Destroy()
+              table.remove(Coins, I)
+              AddCoin()
+            end
+          end
+        end)
+
+        Finish = function()
+          if not Running then return end
+          Running = false
+          for _, C in ipairs(Coins) do C.Part:Destroy() end
+          table.clear(Coins)
+
+          local Plr = Current
+          Current = nil
+          local Name = Plr and Plr.Name or "?"
+          local IsRecord = Score > Best
+          if IsRecord then Best, BestName = Score, Name end
+          SetBoard(string.format("Игра окончена!\n%s: %d очков%s\nРекорд: %s — %d",
+            Name, Score, IsRecord and " — НОВЫЙ РЕКОРД!" or "", BestName == "" and "—" or BestName, Best))
+
+          local Char = Plr and Plr.Character
+          local Root = Char and Char:FindFirstChild("HumanoidRootPart")
+          if Root then Root.CFrame = CFrame.new(Pad.Position + Vector3.new(0, 4, 8)) end
+
+          task.delay(4, function()
+            if Running then return end
+            Prompt.Enabled = true
+            Pad.Color = Green
+            IdleBoard()
+          end)
+        end
+
+        local function StartRound(Plr)
+          if Running then return end
+          local Char = Plr.Character
+          local Root = Char and Char:FindFirstChild("HumanoidRootPart")
+          if not Root then return end
+
+          Running, Current, Score = true, Plr, 0
+          EndTime = os.clock() + Duration
+          Prompt.Enabled = false
+          Pad.Color = Red
+          for _ = 1, CoinCount do AddCoin() end
+          Root.CFrame = CFrame.new(Floor.Position + Vector3.new(0, 4, 0))
+
+          task.spawn(function()
+            while Running and Current == Plr do
+              local TimeLeft = EndTime - os.clock()
+              if TimeLeft <= 0 then break end
+              SetBoard(string.format("%s\nВремя: %d\nОчки: %d", Plr.Name, math.ceil(TimeLeft), Score))
+              task.wait(0.2)
+            end
+            if Running and Current == Plr then Finish() end
+          end)
+        end
+
+        Prompt.Triggered:Connect(StartRound)
+        Players.PlayerRemoving:Connect(function(Plr)
+          if Plr == Current then Finish() end
+        end)
+
+        Pad.Color = Green
+        IdleBoard()
+      >>>
     }
 }

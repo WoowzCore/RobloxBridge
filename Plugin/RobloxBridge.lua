@@ -1,18 +1,129 @@
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
+local Selection = game:GetService("Selection")
 
 local Port = tonumber(plugin:GetSetting("Port")) or 4949
 local State = { Found = false, Place = "", Project = "", Folder = "", Creating = false, Dump = nil }
 local Busy, Probing = false, false
+local OnCommand
 
 local Green, Yellow, Red = Color3.fromRGB(70, 170, 90), Color3.fromRGB(220, 170, 40), Color3.fromRGB(225, 80, 80)
+local Orange, Blue, White = Color3.fromRGB(240, 130, 40), Color3.fromRGB(90, 160, 255), Color3.new(1, 1, 1)
 
-local function Theme(Color) return settings().Studio.Theme:GetColor(Color) end
+-- ===== Тема и компоненты =====
+local Studio = settings().Studio
+local SG = Enum.StudioStyleGuideColor
+local function Theme(Color) return Studio.Theme:GetColor(Color) end
+
+local C = {
+	Bg = function() return Theme(SG.MainBackground) end,
+	Text = function() return Theme(SG.MainText) end,
+	Dim = function() return Theme(SG.DimmedText) end,
+	Card = function() return Theme(SG.MainBackground):Lerp(Theme(SG.MainText), 0.05) end,
+	Line = function() return Theme(SG.Border) end,
+	Btn = function() return Theme(SG.Button) end,
+	BtnText = function() return Theme(SG.ButtonText) end,
+	Input = function() return Theme(SG.InputFieldBackground) end,
+	InputLine = function() return Theme(SG.InputFieldBorder) end,
+	Accent = function() return Theme(SG.MainButton) end,
+}
+local function Dim() return C.Dim() end
+
+-- Свойства, заданные функцией, перекрашиваются при смене темы
+local Themed = {}
+local function Bind(O, Prop, Fn)
+	O[Prop] = Fn()
+	if not Themed[O] then
+		Themed[O] = {}
+		O.Destroying:Connect(function() Themed[O] = nil end)
+	end
+	table.insert(Themed[O], { Prop, Fn })
+end
+Studio.ThemeChanged:Connect(function()
+	for O, List in pairs(Themed) do
+		for _, T in ipairs(List) do pcall(function() O[T[1]] = T[2]() end) end
+	end
+end)
+
 local function make(Class, Props, Parent)
 	local O = Instance.new(Class)
-	for K, V in pairs(Props) do O[K] = V end
+	for K, V in pairs(Props) do
+		if type(V) == "function" then Bind(O, K, V) else O[K] = V end
+	end
 	O.Parent = Parent
 	return O
+end
+
+local AutoY, Left, Top = Enum.AutomaticSize.Y, Enum.TextXAlignment.Left, Enum.TextYAlignment.Top
+
+local function Corner(P, R) return make("UICorner", { CornerRadius = UDim.new(0, R or 6) }, P) end
+local function Pad(P, T, R, B, L)
+	return make("UIPadding", { PaddingTop = UDim.new(0, T), PaddingRight = UDim.new(0, R), PaddingBottom = UDim.new(0, B), PaddingLeft = UDim.new(0, L) }, P)
+end
+local function List(P, Gap, Dir)
+	return make("UIListLayout", { Padding = UDim.new(0, Gap), SortOrder = Enum.SortOrder.LayoutOrder,
+		FillDirection = Dir or Enum.FillDirection.Vertical }, P)
+end
+
+local function Text(Parent, Order, Str, Opt)
+	Opt = Opt or {}
+	return make("TextLabel", { LayoutOrder = Order, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY,
+		BackgroundTransparency = 1, TextWrapped = true, RichText = Opt.Rich == true,
+		TextXAlignment = Left, TextYAlignment = Top,
+		Font = Opt.Bold and Enum.Font.SourceSansBold or (Opt.Code and Enum.Font.Code or Enum.Font.SourceSans),
+		TextSize = Opt.Size or 14, Text = Str, TextColor3 = Opt.Color or C.Text }, Parent)
+end
+
+local function Card(Parent, Order)
+	local F = make("Frame", { LayoutOrder = Order, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY,
+		BorderSizePixel = 0, BackgroundColor3 = C.Card }, Parent)
+	Corner(F, 8)
+	make("UIStroke", { Color = C.Line, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, F)
+	Pad(F, 10, 10, 10, 10)
+	List(F, 6)
+	return F
+end
+
+local function Button(Parent, Order, Str, Style, Size)
+	local B = make("TextButton", { LayoutOrder = Order, Size = Size or UDim2.new(1, 0, 0, Style == "link" and 22 or 30),
+		BorderSizePixel = 0, AutoButtonColor = false, TextWrapped = true, TextSize = 14, Text = Str,
+		Font = Style == "primary" and Enum.Font.SourceSansBold or Enum.Font.SourceSans,
+		BackgroundColor3 = Style == "primary" and C.Accent or C.Btn,
+		TextColor3 = Style == "primary" and White or (Style == "link" and Blue or C.BtnText) }, Parent)
+	if Style == "link" then
+		B.BackgroundTransparency = 1
+		B.TextXAlignment = Left
+	else
+		Corner(B, 6)
+		B.MouseEnter:Connect(function() if B.Active then B.BackgroundTransparency = 0.18 end end)
+		B.MouseLeave:Connect(function() B.BackgroundTransparency = B.Active and 0 or 0.6 end)
+	end
+	return B
+end
+
+local function Enable(B, On)
+	B.Active = On
+	B.TextTransparency = On and 0 or 0.55
+	if B.BackgroundTransparency < 1 then B.BackgroundTransparency = On and 0 or 0.6 end
+end
+
+local function Click(B, Fn)
+	B.MouseButton1Click:Connect(function() if B.Active then Fn() end end)
+end
+
+local function Box(Parent, Order, Height, Multi)
+	local T = make("TextBox", { LayoutOrder = Order, Size = UDim2.new(1, 0, 0, Height), ClearTextOnFocus = false,
+		MultiLine = Multi, TextWrapped = Multi, Font = Enum.Font.Code, TextSize = 13, BorderSizePixel = 0,
+		TextXAlignment = Left, TextYAlignment = Multi and Top or Enum.TextYAlignment.Center, Text = "",
+		BackgroundColor3 = C.Input, TextColor3 = C.Text, PlaceholderColor3 = C.Dim }, Parent)
+	Corner(T, 6)
+	make("UIStroke", { Color = C.InputLine, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, T)
+	Pad(T, 4, 6, 4, 6)
+	return T
+end
+
+local function HexOf(Col)
+	return string.format("#%02X%02X%02X", math.floor(Col.R * 255 + 0.5), math.floor(Col.G * 255 + 0.5), math.floor(Col.B * 255 + 0.5))
 end
 
 -- ===== HTTP =====
@@ -34,99 +145,119 @@ end
 
 local function PlaceInfo() return { PlaceId = game.PlaceId, UniverseId = game.GameId } end
 
--- ===== UI =====
+-- ===== Главное окно =====
 local Widget = plugin:CreateDockWidgetPluginGui("RobloxBridge",
-	DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 300, 300, 240, 160))
+	DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 320, 520, 260, 200))
 Widget.Title = "RobloxBridge"
 local Toggle = plugin:CreateToolbar("RobloxBridge"):CreateButton("RobloxBridge", "Открыть панель RobloxBridge", "")
 Toggle.ClickableWhenViewportHidden = true
 Toggle.Click:Connect(function() Widget.Enabled = not Widget.Enabled end)
 
-local Root = make("Frame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0,
-	BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.MainBackground) }, Widget)
-make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, Root)
-make("UIPadding", { PaddingTop = UDim.new(0, 8), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, Root)
+local Root = make("ScrollingFrame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0, CanvasSize = UDim2.new(),
+	AutomaticCanvasSize = AutoY, ScrollBarThickness = 6, ScrollingDirection = Enum.ScrollingDirection.Y,
+	BackgroundColor3 = C.Bg }, Widget)
+List(Root, 8)
+Pad(Root, 8, 12, 10, 8)
 
-local function Label(Order)
-	return make("TextLabel", { LayoutOrder = Order, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-		BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
-		TextYAlignment = Enum.TextYAlignment.Top, Font = Enum.Font.SourceSans, TextSize = 14, Text = "",
-		TextColor3 = Theme(Enum.StudioStyleGuideColor.MainText) }, Root)
+-- Карточка статуса
+local StatusCard = Card(Root, 1)
+local Row0 = make("Frame", { LayoutOrder = 1, Size = UDim2.new(1, 0, 0, 22), BackgroundTransparency = 1 }, StatusCard)
+local Dot = make("Frame", { Size = UDim2.fromOffset(10, 10), Position = UDim2.new(0, 2, 0.5, -5), BorderSizePixel = 0,
+	BackgroundColor3 = C.Dim() }, Row0)
+Corner(Dot, 5)
+local StatusTitle = make("TextLabel", { Position = UDim2.new(0, 20, 0, 0), Size = UDim2.new(1, -20, 1, 0),
+	BackgroundTransparency = 1, Font = Enum.Font.SourceSansBold, TextSize = 16, TextXAlignment = Left,
+	TextTruncate = Enum.TextTruncate.AtEnd, Text = "", TextColor3 = C.Text }, Row0)
+local StatusSub = Text(StatusCard, 2, "", { Color = C.Dim, Size = 13 })
+local Action = Button(StatusCard, 3, "", "primary")
+Action.Visible = false
+local PortLink = Button(StatusCard, 4, "", "link")
+PortLink.TextSize = 13
+local PortBox = Box(StatusCard, 5, 28, false)
+PortBox.Visible = false
+PortBox.PlaceholderText = "Порт (1024–65535), Enter"
+local DumpBtn = make("TextButton", { LayoutOrder = 6, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY,
+	BackgroundTransparency = 1, AutoButtonColor = false, TextWrapped = true, TextXAlignment = Left, TextYAlignment = Top,
+	Font = Enum.Font.SourceSans, TextSize = 12, Text = "", Visible = false, TextColor3 = C.Dim }, StatusCard)
+
+local DumpOpen = false
+
+local function SetStatus(Col, Title, Sub)
+	Dot.BackgroundColor3 = Col
+	StatusTitle.Text = Title
+	StatusSub.Text = Sub or ""
+	StatusSub.Visible = (Sub or "") ~= ""
 end
 
-local Status, DumpLine = Label(1), Label(2)
-local Action = make("TextButton", { LayoutOrder = 3, Size = UDim2.new(1, 0, 0, 28), Visible = false, BorderSizePixel = 0,
-	Font = Enum.Font.SourceSans, TextSize = 14, Text = "",
-	BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.Button),
-	TextColor3 = Theme(Enum.StudioStyleGuideColor.ButtonText) }, Root)
-local PortLink = make("TextButton", { LayoutOrder = 4, Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1,
-	Font = Enum.Font.SourceSans, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
-	TextColor3 = Color3.fromRGB(90, 160, 255), Text = "" }, Root)
-local PortBox = make("TextBox", { LayoutOrder = 5, Size = UDim2.new(1, 0, 0, 24), Visible = false, ClearTextOnFocus = false,
-	Font = Enum.Font.SourceSans, TextSize = 14, Text = "", PlaceholderText = "Порт (1024–65535), Enter",
-	BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.InputFieldBackground),
-	TextColor3 = Theme(Enum.StudioStyleGuideColor.MainText) }, Root)
+local function RenderDump()
+	local Dump = State.Dump
+	DumpBtn.Visible = false
+	if not State.Found then return end
+	if Probing and State.ProbeText then
+		DumpBtn.Text = State.ProbeText
+		DumpBtn.TextColor3 = Dim()
+	elseif State.ProbeError then
+		DumpBtn.Text = State.ProbeError
+		DumpBtn.TextColor3 = Red
+	elseif Dump then
+		local Marks = { ok = "✔ ", checking = "… " }
+		local Colors = { ok = Green, checking = Dim(), missing = Red, broken = Red }
+		local T = (DumpOpen and "▾ " or "▸ ") .. "API-дамп: " .. (Marks[Dump.state] or "⚠ ") .. tostring(Dump.message)
+		if DumpOpen then
+			T ..= "\nStudio: " .. tostring(Dump.studio)
+				.. "\nДамп принят для: " .. tostring(Dump.dumpStudio)
+				.. "\nХеш файла: " .. tostring(Dump.hash)
+				.. ", классов " .. tostring(Dump.classes) .. ", свойств " .. tostring(Dump.props)
+		end
+		DumpBtn.Text = T
+		DumpBtn.TextColor3 = Colors[Dump.state] or Yellow
+	else
+		return
+	end
+	DumpBtn.Visible = true
+end
+DumpBtn.MouseButton1Click:Connect(function()
+	DumpOpen = not DumpOpen
+	RenderDump()
+end)
 
 local function Render()
-	local Dim = Theme(Enum.StudioStyleGuideColor.DimmedText)
 	Action.Visible = false
-	DumpLine.Text = ""
 	PortLink.Visible = not State.Found
 	PortLink.Text = "Изменить порт (сейчас " .. Port .. ")"
 	if State.Found then PortBox.Visible = false end
 
 	if not State.Found then
-		Status.Text = "Поиск сервера RobloxBridge (порт " .. Port .. ")…"
-		Status.TextColor3 = Dim
+		SetStatus(Dim(), "Ищу приложение…", "Сервер RobloxBridge на порту " .. Port .. ". Запустите приложение.")
+		RenderDump()
 		return
 	end
 
-	local P, Dump = State.Place, State.Dump
+	local P = State.Place
 	if P == "noDump" then
-		Status.Text = "✖ Нужен файл дампа API. В окне RobloxBridge нажмите «Скачать на GitHub», скачайте файл и выберите его."
-		Status.TextColor3 = Red
+		SetStatus(Red, "Нужен API-дамп", "В окне RobloxBridge нажмите «GitHub», скачайте файл и выберите его через «Выбрать файл…».")
 	elseif P == "local" then
-		Status.Text = "Плейс не опубликован. File → Publish to Roblox (можно приватным)."
-		Status.TextColor3 = Yellow
+		SetStatus(Yellow, "Плейс не опубликован", "File → Publish to Roblox (можно приватным).")
 	elseif P == "noProject" then
 		if State.Creating then
-			Status.Text = "Выберите папку в окне RobloxBridge…"
-			Status.TextColor3 = Dim
+			SetStatus(Dim(), "Создание проекта", "Выберите папку в окне RobloxBridge…")
 		else
-			Status.Text = "Проект для этой игры не открыт."
-			Status.TextColor3 = Dim
+			SetStatus(Yellow, "Проект не открыт", "Для этой игры ещё нет проекта.")
 			Action.Text = "Создать проект для этой игры"
 			Action.Visible = true
 		end
 	elseif P == "otherGame" then
-		Status.Text = "Открыт проект «" .. State.Project .. "», но это другая игра. Закройте или смените проект в приложении."
-		Status.TextColor3 = Red
+		SetStatus(Red, "Другая игра", "Открыт проект «" .. State.Project .. "» от другой игры. Закройте или смените проект в приложении.")
 	elseif P == "newPlace" then
-		Status.Text = "Проект «" .. State.Project .. "»: этого плейса в нём ещё нет."
-		Status.TextColor3 = Yellow
+		SetStatus(Yellow, "Новый плейс", "В проекте «" .. State.Project .. "» этого плейса ещё нет.")
 		Action.Text = "Добавить этот плейс в проект"
 		Action.Visible = true
 	elseif P == "ready" then
-		Status.Text = "✔ Проект «" .. State.Project .. "», папка плейса: Places/" .. State.Folder
-		Status.TextColor3 = Green
+		SetStatus(Green, "Подключено", "Проект «" .. State.Project .. "» · Places/" .. State.Folder)
+	else
+		SetStatus(Dim(), "Подключено", "")
 	end
-
-	if Probing and State.ProbeText then
-		DumpLine.Text = State.ProbeText
-		DumpLine.TextColor3 = Dim
-	elseif State.ProbeError then
-		DumpLine.Text = State.ProbeError
-		DumpLine.TextColor3 = Red
-	elseif Dump then
-		local Marks = { ok = "✔ ", checking = "… " }
-		local Colors = { ok = Green, checking = Dim, missing = Red, broken = Red }
-		DumpLine.Text = (Marks[Dump.state] or "⚠ ") .. tostring(Dump.message)
-			.. "\nStudio: " .. tostring(Dump.studio)
-			.. "\nДамп принят для: " .. tostring(Dump.dumpStudio)
-			.. "\nХеш файла: " .. tostring(Dump.hash)
-			.. ", классов " .. tostring(Dump.classes) .. ", свойств " .. tostring(Dump.props)
-		DumpLine.TextColor3 = Colors[Dump.state] or Yellow
-	end
+	RenderDump()
 end
 
 -- ===== Проверка дампа в этой Studio (безопасная) =====
@@ -173,8 +304,8 @@ local function Probe()
 				Render()
 				task.wait()
 			end
-			local function CheckProps(Inst, ClassName, C)
-				for Prop in pairs(C.Props) do
+			local function CheckProps(Inst, ClassName, Cls)
+				for Prop in pairs(Cls.Props) do
 					Checked += 1
 					local Ok3, E = pcall(function() return Inst[Prop] end)
 					if not Ok3 and string.find(tostring(E), "is not a valid member", 1, true) then
@@ -184,13 +315,13 @@ local function Probe()
 			end
 
 			for _, ClassName in ipairs(ProbeClasses) do
-				local C = Schema.Classes[ClassName]
-				if not C then
+				local Cls = Schema.Classes[ClassName]
+				if not Cls then
 					Miss(ClassName)
 				else
 					local Ok2, I = pcall(Instance.new, ClassName)
 					if Ok2 then
-						CheckProps(I, ClassName, C)
+						CheckProps(I, ClassName, Cls)
 						I:Destroy()
 					else
 						Miss(ClassName)
@@ -200,9 +331,9 @@ local function Probe()
 			end
 
 			for _, ServiceName in ipairs(ProbeServices) do
-				local C = Schema.Classes[ServiceName]
+				local Cls = Schema.Classes[ServiceName]
 				local Svc = game:FindService(ServiceName)
-				if C and Svc then CheckProps(Svc, ServiceName, C) end
+				if Cls and Svc then CheckProps(Svc, ServiceName, Cls) end
 				Step(ServiceName)
 			end
 
@@ -241,6 +372,7 @@ local function Tick()
 	end
 	Render()
 	Busy = false
+	if D and D.cmd and OnCommand then OnCommand(D.cmd) end
 	if D and D.dump and D.dump.probe then Probe() end
 end
 
@@ -281,7 +413,6 @@ task.spawn(Tick)
 
 -- ===== Pull / Push / Diff =====
 do
-	local History = game:GetService("ChangeHistoryService")
 	local CHUNK, MAXSHOW = 500000, 120
 
 	local function Base() return "http://localhost:" .. Port end
@@ -296,22 +427,22 @@ do
 		return S
 	end
 
-	-- Возвращает (данные, ошибка). Ошибки сервера (400/409/500) приходят с текстом.
-	local function Call(Path, Body)
+	local function Call(Path, Body, Quiet)
+		local Dbg = DebugOn and not Quiet
 		local Req = { Url = Base() .. Path, Method = Body and "POST" or "GET", Headers = { ["Content-Type"] = "application/json" } }
-		if DebugOn then Req.Headers["X-Bridge-Debug"] = "1" end
+		if Dbg then Req.Headers["X-Bridge-Debug"] = "1" end
 		local Json
 		if Body then Json = HttpService:JSONEncode(Body); Req.Body = Json end
 		local T0 = os.clock()
-		if DebugOn then
+		if Dbg then
 			print("[Bridge] → " .. Req.Method .. " " .. Path .. " (" .. (Json and #Json or 0) .. " байт)" .. (Json and ("\n" .. Cut(Json)) or ""))
 		end
 		local Ok, R = pcall(HttpService.RequestAsync, HttpService, Req)
 		if not Ok then
-			if DebugOn then print("[Bridge] ← ошибка: " .. tostring(R)) end
+			if Dbg then print("[Bridge] ← ошибка: " .. tostring(R)) end
 			return nil, "нет связи с приложением: " .. tostring(R)
 		end
-		if DebugOn then
+		if Dbg then
 			print("[Bridge] ← " .. R.StatusCode .. ", " .. #R.Body .. " байт, " .. math.floor((os.clock() - T0) * 1000) .. " мс\n" .. Cut(R.Body))
 		end
 		local Ok2, D = pcall(HttpService.JSONDecode, HttpService, R.Body)
@@ -387,8 +518,8 @@ do
 	end
 
 	local function PropsOf(Class)
-		local C = PropCache[Class]
-		if C then return C end
+		local Cached = PropCache[Class]
+		if Cached then return Cached end
 		local Map, Cur, Guard = {}, Class, 0
 		while Cur and Cur ~= "" and Guard < 40 do
 			local Info = Schema.Classes[Cur]
@@ -399,7 +530,7 @@ do
 			Cur = Info.Super
 			Guard += 1
 		end
-		C = { list = {}, types = Map, unsup = {} }
+		local Res = { list = {}, types = Map, unsup = {} }
 		local Names = {}
 		for N in pairs(Map) do
 			if not SkipProp[N] then table.insert(Names, N) end
@@ -407,10 +538,10 @@ do
 		table.sort(Names)
 		for _, N in ipairs(Names) do
 			local T = Map[N]
-			if Supported(T) then table.insert(C.list, { N, T }) else table.insert(C.unsup, T) end
+			if Supported(T) then table.insert(Res.list, { N, T }) else table.insert(Res.unsup, T) end
 		end
-		PropCache[Class] = C
-		return C
+		PropCache[Class] = Res
+		return Res
 	end
 
 	-- Значения по умолчанию через Instance.new (только для классов, которые реально встретились). false — нельзя (сервисы).
@@ -454,19 +585,19 @@ do
 	local function Esc(S) return (string.gsub(string.gsub(S, "%%", "%%25"), "/", "%%2F")) end
 
 	local function Kids(Inst, Path)
-		local List = {}
-		for _, C in ipairs(Inst:GetChildren()) do
-			if not C:IsA("PartOperation") then table.insert(List, C) end
+		local Items = {}
+		for _, Ch in ipairs(Inst:GetChildren()) do
+			if not Ch:IsA("PartOperation") then table.insert(Items, Ch) end
 		end
-		table.sort(List, function(A, B)
+		table.sort(Items, function(A, B)
 			if A.Name ~= B.Name then return A.Name < B.Name end
 			return A.ClassName < B.ClassName
 		end)
 		local Res, Prev, Dup = {}, nil, 0
-		for _, C in ipairs(List) do
-			if C.Name == Prev then Dup += 1 else Dup = 1; Prev = C.Name end
-			local Key = Esc(C.Name) .. (Dup > 1 and ("~" .. Dup) or "")
-			table.insert(Res, { Path == "" and Key or (Path .. "/" .. Key), C })
+		for _, Ch in ipairs(Items) do
+			if Ch.Name == Prev then Dup += 1 else Dup = 1; Prev = Ch.Name end
+			local Key = Esc(Ch.Name) .. (Dup > 1 and ("~" .. Dup) or "")
+			table.insert(Res, { Path == "" and Key or (Path .. "/" .. Key), Ch })
 		end
 		return Res
 	end
@@ -570,7 +701,7 @@ do
 			Flush()
 		end
 
-		local Total, Last = #Parts, nil
+		local Total, LastResp = #Parts, nil
 		for I, Body in ipairs(Parts) do
 			local Req = { services = Body }
 			if I == Total then
@@ -580,9 +711,9 @@ do
 			if Total > 1 then SetInfo("Отправка: часть " .. I .. "/" .. Total) end
 			local D, E = Call(Route .. Q() .. "&session=" .. Session .. "&part=" .. I .. "&parts=" .. Total, Req)
 			if E then return D, E end
-			Last = D
+			LastResp = D
 		end
-		return Last
+		return LastResp
 	end
 
 	-- ===== Разбор значений из файла =====
@@ -690,11 +821,17 @@ do
 	end
 
 	-- ===== Применение =====
-	local function SetProps(Inst, Op, Errs)
+	local function SetProps(Inst, Op, Errs, J)
 		local Types = PropsOf(Op.class).types
+		local function Keep(K)
+			if not J then return end
+			local Ok, Old = pcall(GetProp, Inst, K)
+			if Ok then table.insert(J, function() Inst[K] = Old end) end
+		end
 		for _, P in ipairs(Op.set or {}) do
 			local K = P.k
 			if K == "Source" then
+				Keep(K)
 				local Ok, E = pcall(function() Inst.Source = P.v end)
 				if not Ok then table.insert(Errs, Op.path .. ".Source: " .. tostring(E)) end
 			else
@@ -702,6 +839,7 @@ do
 				if not T or SkipProp[K] or not Supported(T) then
 					table.insert(Errs, Op.path .. "." .. K .. ": нет в схеме, пропущено")
 				else
+					Keep(K)
 					local Ok, E = pcall(function()
 						local V = Dec(T, P.v, P.f)
 						local Ok2, E2 = pcall(function() Inst[K] = V end)
@@ -720,16 +858,34 @@ do
 			elseif Def.raw[K] == nil then
 				table.insert(Errs, Op.path .. "." .. K .. ": нет значения по умолчанию")
 			else
+				Keep(K)
 				local Ok, E = pcall(function() Inst[K] = Def.raw[K] end)
 				if not Ok then table.insert(Errs, Op.path .. "." .. K .. ": " .. tostring(E)) end
 			end
 		end
 		for _, P in ipairs(Op.attrs or {}) do
+			if J then
+				local Old = Inst:GetAttribute(P.k)
+				table.insert(J, function() Inst:SetAttribute(P.k, Old) end)
+			end
 			local Ok, E = pcall(function() Inst:SetAttribute(P.k, DecAttr(P.v, P.f)) end)
 			if not Ok then table.insert(Errs, Op.path .. " $" .. P.k .. ": " .. tostring(E)) end
 		end
-		for _, K in ipairs(Op.adel or {}) do Inst:SetAttribute(K, nil) end
+		for _, K in ipairs(Op.adel or {}) do
+			if J then
+				local Old = Inst:GetAttribute(K)
+				table.insert(J, function() Inst:SetAttribute(K, Old) end)
+			end
+			Inst:SetAttribute(K, nil)
+		end
 		if Op.tags then
+			if J then
+				local Old = Inst:GetTags()
+				table.insert(J, function()
+					for _, T in ipairs(Inst:GetTags()) do Inst:RemoveTag(T) end
+					for _, T in ipairs(Old) do Inst:AddTag(T) end
+				end)
+			end
 			local Want = {}
 			for _, T in ipairs(Op.tags) do Want[T] = true end
 			for _, T in ipairs(Inst:GetTags()) do
@@ -742,9 +898,8 @@ do
 	local function ApplyOps(Ops, Cfg)
 		local Map = Index(Cfg)
 		local Created, Changed, Deleted, Skipped = 0, 0, 0, 0
-		local Errs, Failed = {}, {}
+		local Errs, Failed, J = {}, {}, {}
 
-		local Rec = History:TryBeginRecording("Bridge Push")
 		local Ok, Err = pcall(function()
 			for _, Op in ipairs(Ops) do
 				if Op.op == "create" then
@@ -767,8 +922,9 @@ do
 							table.insert(Errs, Op.path .. ": " .. tostring(I))
 						else
 							I.Name = Op.name
-							SetProps(I, Op, Errs)
+							SetProps(I, Op, Errs, nil)
 							I.Parent = Parent
+							table.insert(J, function() I:Destroy() end)
 							Map[Op.path] = I
 							Created += 1
 						end
@@ -776,7 +932,7 @@ do
 				elseif Op.op == "set" then
 					local I = Map[Op.path]
 					if I then
-						SetProps(I, Op, Errs)
+						SetProps(I, Op, Errs, J)
 						Changed += 1
 					else
 						table.insert(Errs, Op.path .. ": объект не найден в Studio")
@@ -788,7 +944,9 @@ do
 					elseif Op.class == "Terrain" then
 						table.insert(Errs, Op.path .. ": Terrain не удаляется")
 					else
-						I:Destroy()
+						local Par = I.Parent
+						I.Parent = nil   -- не Destroy: нужен для отмены
+						table.insert(J, function() I.Parent = Par end)
 						local Prefix = Op.path .. "/"
 						for K in pairs(Map) do
 							if K == Op.path or string.sub(K, 1, #Prefix) == Prefix then Map[K] = nil end
@@ -798,67 +956,139 @@ do
 				end
 			end
 		end)
-		if Rec then History:FinishRecording(Rec, Enum.FinishRecordingOperation.Commit) end
 		if not Ok then table.insert(Errs, "Прервано: " .. tostring(Err)) end
-		return Created, Changed, Deleted, Skipped, Errs
+		return Created, Changed, Deleted, Skipped, Errs, J
 	end
 
-	-- ===== Интерфейс: ряд кнопок + информация + окно diff =====
-	local function Dim() return Theme(Enum.StudioStyleGuideColor.DimmedText) end
-	local Orange = Color3.fromRGB(240, 130, 40)
+	-- ===== Состояние синхронизации + отчёт приложению =====
+	local Working, Pending, UndoJ = false, nil, nil
+	local PreviewLines = {}
+	local AutoApply = plugin:GetSetting("AutoApply") ~= false
+	local HasLines = false
+	local LastText, LastColor, LastLines, Scheduled = "", nil, {}, false
 
-	local Row = make("Frame", { LayoutOrder = 10, Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1, Visible = false }, Root)
-	make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, Row)
-
-	local function Btn(Order, Text)
-		return make("TextButton", { LayoutOrder = Order, Size = UDim2.new(1 / 3, -3, 1, 0), BorderSizePixel = 0,
-			Font = Enum.Font.SourceSans, TextSize = 13, TextWrapped = true, Text = Text,
-			BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.Button),
-			TextColor3 = Theme(Enum.StudioStyleGuideColor.ButtonText) }, Row)
-	end
-	local PullBtn = Btn(1, "Pull: Studio → файлы")
-	local PreBtn = Btn(2, "Push: предпросмотр")
-	local ApplyBtn = Btn(3, "Применить")
-
-	local InfoLabel = make("TextLabel", { LayoutOrder = 11, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-		BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
-		TextYAlignment = Enum.TextYAlignment.Top, Font = Enum.Font.SourceSans, TextSize = 14, Text = "",
-		TextColor3 = Theme(Enum.StudioStyleGuideColor.MainText), Visible = false }, Root)
-
-	local LinesFrame = make("ScrollingFrame", { LayoutOrder = 14, Size = UDim2.new(1, 0, 0, 200), BorderSizePixel = 0,
-		CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 8, Visible = false,
-		BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.InputFieldBackground) }, Root)
-	make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, LinesFrame)
-
-	SetInfo = function(Text, Color)
-		InfoLabel.Text = Text
-		InfoLabel.TextColor3 = Color or Theme(Enum.StudioStyleGuideColor.MainText)
+	local function Report()
+		if Scheduled then return end
+		Scheduled = true
+		task.defer(function()
+			Scheduled = false
+			local Kind = "info"
+			if LastColor == Green then Kind = "ok"
+			elseif LastColor == Yellow then Kind = "warn"
+			elseif LastColor == Red then Kind = "err" end
+			Call("/report" .. Q(), { text = LastText, kind = Kind, canApply = Pending ~= nil, canUndo = UndoJ ~= nil, lines = LastLines }, true)
+		end)
 	end
 
-	local function ShowLines(Lines)
-		for _, C in ipairs(LinesFrame:GetChildren()) do
-			if C:IsA("TextLabel") then C:Destroy() end
-		end
-		local Colors = { ["+"] = Green, ["-"] = Red, ["~"] = Yellow, ["x"] = Dim(), ["!"] = Orange }
-		for I, T in ipairs(Lines) do
-			local Text = T
-			if I > MAXSHOW then Text = "… ещё строк: " .. (#Lines - MAXSHOW) .. " (полностью — в логе приложения)" end
-			local Mark = string.sub(Text, 1, 1)
-			local Col = Colors[Mark] or (Mark == " " and Dim()) or Theme(Enum.StudioStyleGuideColor.MainText)
-			make("TextLabel", { LayoutOrder = I, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-				BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
-				Font = Enum.Font.Code, TextSize = 13, Text = Text, TextColor3 = Col }, LinesFrame)
-			if I > MAXSHOW then break end
-		end
-	end
+	-- ===== Карточка «Синхронизация» =====
+	local SyncCard = Card(Root, 2)
+	SyncCard.Visible = false
+	Text(SyncCard, 1, "Синхронизация", { Bold = true, Size = 15 })
 
-	local Working, Pending = false, nil
+	local BtnRow = make("Frame", { LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 34), BackgroundTransparency = 1 }, SyncCard)
+	List(BtnRow, 6, Enum.FillDirection.Horizontal)
+	local PullBtn = Button(BtnRow, 1, "⬇ Pull", "normal", UDim2.new(0.5, -3, 1, 0))
+	local PushBtn = Button(BtnRow, 2, "⬆ Push", "primary", UDim2.new(0.5, -3, 1, 0))
+	Text(SyncCard, 3, "Pull: Studio → файлы · Push: файлы → Studio", { Color = C.Dim, Size = 12 })
+
+	local AutoBtn = Button(SyncCard, 4, "", "link")
+	local ApplyBtn = Button(SyncCard, 5, "✔ Применить", "primary")
+	local UndoBtn = Button(SyncCard, 6, "↩ Отменить применение", "normal")
+
+	local InfoBox = make("Frame", { LayoutOrder = 7, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY, BorderSizePixel = 0,
+		BackgroundColor3 = C.Input, Visible = false }, SyncCard)
+	Corner(InfoBox, 6)
+	local InfoBar = make("Frame", { Position = UDim2.new(0, 0, 0, 4), Size = UDim2.new(0, 3, 1, -8), BorderSizePixel = 0,
+		BackgroundColor3 = Blue }, InfoBox)
+	Corner(InfoBar, 2)
+	local InfoLabel = Text(InfoBox, 1, "", { Size = 14 })
+	Pad(InfoLabel, 6, 8, 6, 12)
+
+	local function RefreshButtons()
+		Enable(PullBtn, not Working)
+		Enable(PushBtn, not Working)
+		ApplyBtn.Visible = Pending ~= nil
+		Enable(ApplyBtn, not Working)
+		UndoBtn.Visible = UndoJ ~= nil
+		Enable(UndoBtn, not Working)
+	end
+	local function RefreshAuto()
+		AutoBtn.Text = (AutoApply and "☑ " or "☐ ") .. "Применять сразу после проверки"
+		PushBtn.Text = AutoApply and "⬆ Push" or "⬆ Предпросмотр"
+	end
+	RefreshAuto()
+	Click(AutoBtn, function()
+		AutoApply = not AutoApply
+		plugin:SetSetting("AutoApply", AutoApply)
+		RefreshAuto()
+	end)
+
 	local function SetPending(P)
 		Pending = P
-		ApplyBtn.TextTransparency = P and 0 or 0.6
+		RefreshButtons()
+	end
+	local function SetUndo(J)
+		UndoJ = J
+		RefreshButtons()
 	end
 	SetPending(nil)
+	SetUndo(nil)
 
+	SetInfo = function(Str, Color)
+		InfoLabel.Text = Str
+		InfoLabel.TextColor3 = C.Text()
+		InfoBar.BackgroundColor3 = Color or Blue
+		InfoBox.Visible = Str ~= ""
+		LastText, LastColor, LastLines = Str, Color, {}
+		Report()
+	end
+
+	-- ===== Карточка «Изменения» =====
+	local ChangesCard = Card(Root, 3)
+	ChangesCard.Visible = false
+	local ChangesHead = Text(ChangesCard, 1, "", { Rich = true, Bold = true, Size = 15 })
+	local ListFrame = make("Frame", { LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY, BorderSizePixel = 0,
+		BackgroundColor3 = C.Input }, ChangesCard)
+	Corner(ListFrame, 6)
+	Pad(ListFrame, 6, 8, 6, 8)
+	List(ListFrame, 2)
+
+	local function ShowLines(Lines)
+		for _, Ch in ipairs(ListFrame:GetChildren()) do
+			if Ch:IsA("TextLabel") then Ch:Destroy() end
+		end
+		local Cols = { ["+"] = Green, ["-"] = Red, ["~"] = Yellow, ["x"] = Dim(), ["!"] = Orange }
+		local Order, Cnt = { "+", "~", "-", "x", "!" }, {}
+		for I, T in ipairs(Lines) do
+			local Mark = string.sub(T, 1, 1)
+			Cnt[Mark] = (Cnt[Mark] or 0) + 1
+			if I <= MAXSHOW then
+				local Col = Cols[Mark] or (Mark == " " and Dim()) or C.Text()
+				make("TextLabel", { LayoutOrder = I, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY,
+					BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Left, TextYAlignment = Top,
+					Font = Enum.Font.Code, TextSize = 13, Text = T, TextColor3 = Col }, ListFrame)
+			end
+		end
+		if #Lines > MAXSHOW then
+			make("TextLabel", { LayoutOrder = MAXSHOW + 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY,
+				BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Left, Font = Enum.Font.SourceSans,
+				TextSize = 13, Text = "… ещё строк: " .. (#Lines - MAXSHOW) .. " (полностью — в логе приложения)",
+				TextColor3 = Dim() }, ListFrame)
+		end
+		local Chips = {}
+		for _, M in ipairs(Order) do
+			if Cnt[M] then
+				table.insert(Chips, string.format('<font color="%s">%s%d</font>', HexOf(Cols[M]), M, Cnt[M]))
+			end
+		end
+		ChangesHead.Text = "Изменения   " .. table.concat(Chips, "  ")
+		HasLines = #Lines > 0
+		ChangesCard.Visible = HasLines and State.Found and State.Place == "ready"
+		LastLines = Lines
+		Report()
+	end
+
+	-- ===== Операции =====
 	local function Prepare()
 		if RunService:IsRunning() then error("Остановите игру (Play) перед синхронизацией", 0) end
 		local Ok, E = LoadSchema()
@@ -873,20 +1103,26 @@ do
 		local Svc, Skipped = Collect(Cfg)
 		local D, E = Send("/pull", Svc, Skipped)
 		if E then error(E, 0) end
+		SetUndo(nil)
 		SetPending(nil)
 		SetInfo(D.text or "Готово", Green)
 		ShowLines(D.lines or {})
 	end
 
+	-- Возвращает true, если есть что применять
 	local function DoPreview()
 		local Cfg = Prepare()
 		local Svc, Skipped = Collect(Cfg)
 		local D, E = Send("/push", Svc, Skipped)
 		if E then error(E, 0) end
-		local C = D.counts
-		local Total = C.created + C.changed + C.deleted
+		local Cn = D.counts
+		local Total = Cn.created + Cn.changed + Cn.deleted
+		PreviewLines = {}
 		local Lines = {}
-		for _, L in ipairs(D.lines or {}) do table.insert(Lines, L) end
+		for _, L in ipairs(D.lines or {}) do
+			table.insert(Lines, L)
+			table.insert(PreviewLines, L)
+		end
 		local Warn = Classify(D.ops or {}, Cfg)
 		for _, L in ipairs(Warn) do table.insert(Lines, L) end
 		if #Warn > 0 then Note(Warn) end
@@ -895,35 +1131,58 @@ do
 			SetInfo("Push: изменений нет", Green)
 		else
 			SetPending({ token = D.token })
-			SetInfo("Push, предпросмотр: создастся " .. C.created .. ", изменится " .. C.changed .. ", удалится " .. C.deleted
+			SetInfo("Предпросмотр: создастся " .. Cn.created .. ", изменится " .. Cn.changed .. ", удалится " .. Cn.deleted
 				.. ". Нажмите «Применить».", Yellow)
 		end
 		ShowLines(Lines)
+		return Total > 0
 	end
 
 	local function DoApply()
 		local P = Pending
+		if not P then error("Нечего применять: сначала сделайте предпросмотр", 0) end
 		local Cfg = Prepare()
 		local Svc, Skipped = Collect(Cfg)
 		local D, E = Send("/push", Svc, Skipped, { apply = true, token = P.token })
 		SetPending(nil)
 		if E then error(E, 0) end
-		local Created, Changed, Deleted, Skip, Errs = ApplyOps(D.ops or {}, Cfg)
-		local Text = "Применено: создано " .. Created .. ", изменено " .. Changed .. ", удалено " .. Deleted
-		if Skip > 0 then Text ..= ", пропущено вложенных " .. Skip end
-		if #Errs > 0 then Text ..= ", ошибок " .. #Errs end
-		local Lines = {}
-		for _, L in ipairs(Errs) do table.insert(Lines, "x " .. L) end
-		SetInfo(Text .. ". Ctrl+Z откатывает. Сделайте предпросмотр заново.", #Errs > 0 and Yellow or Green)
+		local Created, Changed, Deleted, Skip, Errs, J = ApplyOps(D.ops or {}, Cfg)
+		SetUndo(J)
+		local Str = "Применено: создано " .. Created .. ", изменено " .. Changed .. ", удалено " .. Deleted
+		if Skip > 0 then Str ..= ", пропущено вложенных " .. Skip end
+		if #Errs > 0 then Str ..= ", ошибок " .. #Errs end
+		local ErrLines, Lines = {}, {}
+		for _, L in ipairs(PreviewLines) do table.insert(Lines, L) end
+		for _, L in ipairs(Errs) do
+			table.insert(ErrLines, "x " .. L)
+			table.insert(Lines, "x " .. L)
+		end
+		SetInfo(Str .. ". Если что-то не так — «Отменить применение».", #Errs > 0 and Yellow or Green)
 		ShowLines(Lines)
-		local Log = { Text }
-		for I = 1, math.min(#Lines, 40) do table.insert(Log, Lines[I]) end
+		local Log = { Str }
+		for I = 1, math.min(#ErrLines, 40) do table.insert(Log, ErrLines[I]) end
 		Note(Log)
+	end
+
+	local function DoUndo()
+		local J = UndoJ
+		if not J then error("Нечего отменять", 0) end
+		local Fails = 0
+		for I = #J, 1, -1 do
+			if not pcall(J[I]) then Fails += 1 end
+		end
+		SetUndo(nil)
+		SetPending(nil)
+		local Str = "Отменено действий: " .. #J .. (Fails > 0 and (", не удалось: " .. Fails) or "") .. ". Сделайте предпросмотр заново."
+		SetInfo(Str, Fails > 0 and Yellow or Green)
+		ShowLines({})
+		Note({ Str })
 	end
 
 	local function Run(Title, Fn)
 		if Working or not State.Found or State.Place ~= "ready" then return end
 		Working = true
+		RefreshButtons()
 		SetInfo(Title .. "…", Dim())
 		task.spawn(function()
 			local Ok, Err = pcall(Fn)
@@ -933,19 +1192,24 @@ do
 				Note({ "Плагин: " .. tostring(Err) })
 			end
 			Working = false
+			RefreshButtons()
 		end)
 	end
 
-	PullBtn.MouseButton1Click:Connect(function() Run("Pull", DoPull) end)
-	PreBtn.MouseButton1Click:Connect(function() Run("Push: предпросмотр", DoPreview) end)
-	ApplyBtn.MouseButton1Click:Connect(function()
+	Click(PullBtn, function() Run("Pull", DoPull) end)
+	Click(PushBtn, function()
+		Run(AutoApply and "Push" or "Push: предпросмотр", function()
+			local Has = DoPreview()
+			if Has and AutoApply then DoApply() end
+		end)
+	end)
+	Click(ApplyBtn, function()
 		if not Pending then return end
 		Run("Применяю", DoApply)
 	end)
+	Click(UndoBtn, function() Run("Отмена", DoUndo) end)
 
 	-- ===== Вынос объектов в отдельные файлы =====
-	local Selection = game:GetService("Selection")
-
 	-- Путь объекта по тем же правилам, что на сервере (~2 у одинаковых братьев, %2F)
 	local function PathOf(Inst)
 		if Inst.Parent == game then return Inst.Name end
@@ -964,11 +1228,11 @@ do
 		if #Sel ~= 1 then error("Выберите в Explorer один объект", 0) end
 		local Path = PathOf(Sel[1])
 		if not Path then error("Не удалось определить путь выбранного объекта", 0) end
-		local Root, Found = string.match(Path, "^[^/]+"), false
+		local RootName, Found = string.match(Path, "^[^/]+"), false
 		for _, S in ipairs(Cfg.services or {}) do
-			if S == Root then Found = true end
+			if S == RootName then Found = true end
 		end
-		if not Found then error("Сервис " .. Root .. " не входит в Services", 0) end
+		if not Found then error("Сервис " .. RootName .. " не входит в Services", 0) end
 		local D, E = Call((On and "/split" or "/unsplit") .. Q(), { path = Path })
 		if E then error(E, 0) end
 		SetPending(nil)
@@ -976,27 +1240,26 @@ do
 		ShowLines(D.lines or {})
 	end
 
-	local Row2 = make("Frame", { LayoutOrder = 12, Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1, Visible = false }, Root)
-	make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, Row2)
-	local function Btn2(Order, Text)
-		return make("TextButton", { LayoutOrder = Order, Size = UDim2.new(0.5, -2, 1, 0), BorderSizePixel = 0,
-			Font = Enum.Font.SourceSans, TextSize = 13, TextWrapped = true, Text = Text,
-			BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.Button),
-			TextColor3 = Theme(Enum.StudioStyleGuideColor.ButtonText) }, Row2)
-	end
-	local SplitBtn = Btn2(1, "Вынести выделенный в файл")
-	local UnsplitBtn = Btn2(2, "Вернуть в общий файл")
-	SplitBtn.MouseButton1Click:Connect(function() Run("Вынос", function() SplitAction(true) end) end)
-	UnsplitBtn.MouseButton1Click:Connect(function() Run("Возврат", function() SplitAction(false) end) end)
+	-- ===== Карточка «Инструменты» =====
+	local ToolsCard = Card(Root, 4)
+	ToolsCard.Visible = false
+	Text(ToolsCard, 1, "Инструменты", { Bold = true, Size = 15 })
+	local SplitRow = make("Frame", { LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1 }, ToolsCard)
+	List(SplitRow, 6, Enum.FillDirection.Horizontal)
+	local SplitBtn = Button(SplitRow, 1, "Вынести в файл", "normal", UDim2.new(0.5, -3, 1, 0))
+	local UnsplitBtn = Button(SplitRow, 2, "Вернуть в общий", "normal", UDim2.new(0.5, -3, 1, 0))
+	local SplitHint = Text(ToolsCard, 3, "Работает с объектом, выделенным в Explorer.", { Color = C.Dim, Size = 12 })
+	local SetBtn = Button(ToolsCard, 4, "⚙ Настройки плейса…", "link")
+	local DebugBtn = Button(ToolsCard, 5, "", "link")
+	DebugBtn.TextSize = 13
 
-	-- ===== Отладка запросов =====
-	local DebugBtn = make("TextButton", { LayoutOrder = 13, Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1,
-		Font = Enum.Font.SourceSans, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = Color3.fromRGB(90, 160, 255), Text = "", Visible = false }, Root)
+	Click(SplitBtn, function() Run("Вынос", function() SplitAction(true) end) end)
+	Click(UnsplitBtn, function() Run("Возврат", function() SplitAction(false) end) end)
+
 	local function RefreshDebug()
 		DebugBtn.Text = "Отладка запросов: " .. (DebugOn and "вкл (Output плагина + лог приложения)" or "выкл")
 	end
-	DebugBtn.MouseButton1Click:Connect(function()
+	Click(DebugBtn, function()
 		DebugOn = not DebugOn
 		plugin:SetSetting("Debug", DebugOn)
 		RefreshDebug()
@@ -1006,74 +1269,69 @@ do
 	task.spawn(function()
 		while true do
 			local Show = State.Found and State.Place == "ready"
-			Row.Visible, Row2.Visible, InfoLabel.Visible, LinesFrame.Visible = Show, Show, Show, Show
-			DebugBtn.Visible = State.Found
+			SyncCard.Visible = Show
+			ChangesCard.Visible = Show and HasLines
+			ToolsCard.Visible = State.Found
+			SplitRow.Visible, SplitHint.Visible, SetBtn.Visible = Show, Show, Show
 			task.wait(0.5)
 		end
 	end)
-	
-		-- ===== Окно настроек плейса =====
+
+	-- ===== Окно настроек плейса =====
 	local SW = plugin:CreateDockWidgetPluginGui("RobloxBridgeSettings",
-		DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, true, 380, 560, 300, 300))
+		DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, true, 380, 580, 300, 300))
 	SW.Title = "RobloxBridge: настройки плейса"
 
 	local SRoot = make("ScrollingFrame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0, CanvasSize = UDim2.new(),
-		AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 8,
-		BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.MainBackground) }, SW)
-	make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, SRoot)
-	make("UIPadding", { PaddingTop = UDim.new(0, 8), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 12), PaddingBottom = UDim.new(0, 8) }, SRoot)
+		AutomaticCanvasSize = AutoY, ScrollBarThickness = 6, BackgroundColor3 = C.Bg }, SW)
+	List(SRoot, 8)
+	Pad(SRoot, 8, 12, 10, 8)
 
-	local function SText(Order, Text, Color, Size)
-		return make("TextLabel", { LayoutOrder = Order, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-			BackgroundTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
-			TextYAlignment = Enum.TextYAlignment.Top, Font = Enum.Font.SourceSans, TextSize = Size or 13, Text = Text,
-			TextColor3 = Color or Theme(Enum.StudioStyleGuideColor.MainText) }, SRoot)
-	end
-	local function SBox(Order, Height, Multi)
-		return make("TextBox", { LayoutOrder = Order, Size = UDim2.new(1, 0, 0, Height), ClearTextOnFocus = false,
-			MultiLine = Multi, TextWrapped = Multi, Font = Enum.Font.Code, TextSize = 13, BorderSizePixel = 0,
-			TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Text = "",
-			BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.InputFieldBackground),
-			TextColor3 = Theme(Enum.StudioStyleGuideColor.MainText) }, SRoot)
-	end
-	local function SBtn(Order, Text)
-		return make("TextButton", { LayoutOrder = Order, Size = UDim2.new(1, 0, 0, 28), BorderSizePixel = 0,
-			Font = Enum.Font.SourceSans, TextSize = 14, Text = Text,
-			BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.Button),
-			TextColor3 = Theme(Enum.StudioStyleGuideColor.ButtonText) }, SRoot)
-	end
+	local InfoL = Text(SRoot, 1, "", { Color = C.Dim, Size = 13 })
 
-	local InfoL = SText(1, "", Dim())
-	SText(2, "Автовынос в отдельные файлы", nil, 15)
-	SText(3, "Если объект вместе со всеми вложенными занимает в .bridge больше N строк (1 строка = 1 объект со свойствами), "
+	local AutoCard = Card(SRoot, 2)
+	Text(AutoCard, 1, "Автовынос в отдельные файлы", { Bold = true, Size = 15 })
+	Text(AutoCard, 2, "Если объект вместе со всеми вложенными занимает в .bridge больше N строк (1 строка = 1 объект со свойствами), "
 		.. "он сам выносится в отдельный файл Scene/<путь>.bridge. По умолчанию 500. 0 — выключить: тогда выносите только вы "
-		.. "кнопкой «Вынести выделенный». При N > 0 объект длиннее N строк нельзя вернуть в общий файл: он вынесется снова. "
-		.. "Новое значение применится при следующем Pull.", Dim())
-	local AutoBox = SBox(4, 24, false)
-	SText(5, "Сервисы (по одному в строке). Сервисы вне списка не синхронизируются.", nil, 15)
-	local SvcBox = SBox(6, 150, true)
-	SText(7, "Игнорировать (пути объектов вместе с потомками, по одному в строке, например Workspace/Camera)", nil, 15)
-	local IgnBox = SBox(8, 70, true)
-	local SaveBtn = SBtn(9, "Сохранить настройки")
-	local StatL = SText(10, "", Dim())
-	SText(11, "Вынесено в отдельные файлы (клик по пути — выделить в Explorer)", nil, 15)
-	local SplitsFrame = make("Frame", { LayoutOrder = 12, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-		BackgroundTransparency = 1 }, SRoot)
-	make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, SplitsFrame)
-	local ReloadBtn = SBtn(13, "Обновить")
+		.. "кнопкой «Вынести в файл». При N > 0 объект длиннее N строк нельзя вернуть в общий файл: он вынесется снова. "
+		.. "Новое значение применится при следующем Pull.", { Color = C.Dim, Size = 13 })
+	local AutoBox = Box(AutoCard, 3, 28, false)
 
-	local function SStatus(Text, Color)
-		StatL.Text = Text
-		StatL.TextColor3 = Color or Theme(Enum.StudioStyleGuideColor.MainText)
+	local SvcCard = Card(SRoot, 3)
+	Text(SvcCard, 1, "Сервисы", { Bold = true, Size = 15 })
+	Text(SvcCard, 2, "По одному в строке. Сервисы вне списка не синхронизируются.", { Color = C.Dim, Size = 13 })
+	local SvcBox = Box(SvcCard, 3, 150, true)
+
+	local IgnCard = Card(SRoot, 4)
+	Text(IgnCard, 1, "Игнорировать", { Bold = true, Size = 15 })
+	Text(IgnCard, 2, "Пути объектов вместе с потомками, по одному в строке, например Workspace/Camera.", { Color = C.Dim, Size = 13 })
+	local IgnBox = Box(IgnCard, 3, 70, true)
+
+	local SaveBtn = Button(SRoot, 5, "Сохранить настройки", "primary", UDim2.new(1, 0, 0, 32))
+	local StatL = Text(SRoot, 6, "", { Color = C.Dim, Size = 13 })
+
+	local SplCard = Card(SRoot, 7)
+	Text(SplCard, 1, "Вынесено в отдельные файлы", { Bold = true, Size = 15 })
+	Text(SplCard, 2, "Клик по пути — выделить объект в Explorer.", { Color = C.Dim, Size = 13 })
+	local SplitsFrame = make("Frame", { LayoutOrder = 3, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY,
+		BackgroundTransparency = 1 }, SplCard)
+	List(SplitsFrame, 2)
+	local ReloadBtn = Button(SplCard, 4, "Обновить", "normal")
+
+	local function SStatus(Str, Color)
+		StatL.Text = Str
+		StatL.TextColor3 = Color or C.Text()
 	end
 
 	local function Do(Fn)
 		if Working then return end
 		Working = true
+		RefreshButtons()
 		task.spawn(function()
 			local Ok, Err = pcall(Fn)
 			if not Ok then SStatus("✖ " .. tostring(Err), Red) end
 			Working = false
+			RefreshButtons()
 		end)
 	end
 
@@ -1097,41 +1355,39 @@ do
 
 	local Load
 	local function Fill(D)
-		InfoL.Text = "PlaceId " .. tostring(D.placeId) .. ", создан " .. tostring(D.created)
+		InfoL.Text = "PlaceId " .. tostring(D.placeId) .. " · создан " .. tostring(D.created)
 		AutoBox.Text = tostring(D.autoSplit)
 		SvcBox.Text = table.concat(D.services or {}, "\n")
 		IgnBox.Text = table.concat(D.ignore or {}, "\n")
-		for _, C in ipairs(SplitsFrame:GetChildren()) do
-			if C:IsA("Frame") or C:IsA("TextLabel") then C:Destroy() end
+		for _, Ch in ipairs(SplitsFrame:GetChildren()) do
+			if Ch:IsA("Frame") or Ch:IsA("TextLabel") then Ch:Destroy() end
 		end
-		local List = D.splits or {}
-		if #List == 0 then
+		local Items = D.splits or {}
+		if #Items == 0 then
 			make("TextLabel", { LayoutOrder = 1, Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1,
-				TextXAlignment = Enum.TextXAlignment.Left, Font = Enum.Font.SourceSans, TextSize = 13,
+				TextXAlignment = Left, Font = Enum.Font.SourceSans, TextSize = 13,
 				Text = "(ничего не вынесено)", TextColor3 = Dim() }, SplitsFrame)
 		end
-		for I, S in ipairs(List) do
-			local RowF = make("Frame", { LayoutOrder = I, Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1 }, SplitsFrame)
-			make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4),
-				SortOrder = Enum.SortOrder.LayoutOrder }, RowF)
-			local Name = make("TextButton", { LayoutOrder = 1, Size = UDim2.new(1, -84, 1, 0), BackgroundTransparency = 1,
-				TextXAlignment = Enum.TextXAlignment.Left, Font = Enum.Font.Code, TextSize = 12,
-				TextTruncate = Enum.TextTruncate.AtEnd,
-				Text = S.path .. (S.exists and ("  (" .. S.lines .. " стр.)") or "  (файла нет!)"),
-				TextColor3 = S.exists and Theme(Enum.StudioStyleGuideColor.MainText) or Red }, RowF)
-			local Back = make("TextButton", { LayoutOrder = 2, Size = UDim2.new(0, 80, 1, 0), BorderSizePixel = 0,
-				Font = Enum.Font.SourceSans, TextSize = 13, Text = "Вернуть",
-				BackgroundColor3 = Theme(Enum.StudioStyleGuideColor.Button),
-				TextColor3 = Theme(Enum.StudioStyleGuideColor.ButtonText) }, RowF)
+		for I, S in ipairs(Items) do
+			local RowF = make("Frame", { LayoutOrder = I, Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1 }, SplitsFrame)
+			List(RowF, 4, Enum.FillDirection.Horizontal)
+			local Name = Button(RowF, 1, S.path .. (S.exists and ("  (" .. S.lines .. " стр.)") or "  (файла нет!)"),
+				"link", UDim2.new(1, -78, 1, 0))
+			Name.Font = Enum.Font.Code
+			Name.TextSize = 12
+			Name.TextWrapped = false
+			Name.TextTruncate = Enum.TextTruncate.AtEnd
+			Name.TextColor3 = S.exists and C.Text() or Red
+			local Back = Button(RowF, 2, "Вернуть", "normal", UDim2.new(0, 74, 1, 0))
 			Name.MouseButton1Click:Connect(function()
 				local Inst = Find(S.path)
 				if Inst then Selection:Set({ Inst }) else SStatus("Объект не найден в Studio: " .. S.path, Yellow) end
 			end)
 			Back.MouseButton1Click:Connect(function()
 				Do(function()
-					local R, E = Call("/unsplit" .. Q(), { path = S.path })
+					local Rs, E = Call("/unsplit" .. Q(), { path = S.path })
 					if E then error(E, 0) end
-					SStatus(R.text or "Готово", R.warn and Yellow or Green)
+					SStatus(Rs.text or "Готово", Rs.warn and Yellow or Green)
 					Load()
 				end)
 			end)
@@ -1144,45 +1400,60 @@ do
 		Fill(D)
 	end
 
-	local function Lines(Text)
-		local R = {}
-		for L in string.gmatch(Text, "[^\r\n]+") do
+	local function SplitLines(Str)
+		local Res = {}
+		for L in string.gmatch(Str, "[^\r\n]+") do
 			local T = string.match(L, "^%s*(.-)%s*$")
-			if T ~= "" then table.insert(R, T) end
+			if T ~= "" then table.insert(Res, T) end
 		end
-		return R
+		return Res
 	end
 
 	local function DoSave()
 		local N = tonumber(AutoBox.Text)
 		if not N or N < 0 or N ~= math.floor(N) then error("Автовынос: нужно целое число, 0 или больше", 0) end
-		local Svc = Lines(SvcBox.Text)
+		local Svc = SplitLines(SvcBox.Text)
 		if #Svc == 0 then error("Список сервисов не может быть пустым", 0) end
 		local Bad = {}
 		for _, S in ipairs(Svc) do
 			if not pcall(game.GetService, game, S) then table.insert(Bad, S) end
 		end
 		if #Bad > 0 then error("Нет такого сервиса в Studio: " .. table.concat(Bad, ", "), 0) end
-		local D, E = Call("/settings" .. Q(), { autoSplit = N, services = Svc, ignore = Lines(IgnBox.Text) })
+		local D, E = Call("/settings" .. Q(), { autoSplit = N, services = Svc, ignore = SplitLines(IgnBox.Text) })
 		if E then error(E, 0) end
 		SStatus((D.text or "Готово") .. ". Чтобы изменения попали в файлы, сделайте Pull.", Green)
 		Fill(D)
 	end
 
-	SaveBtn.MouseButton1Click:Connect(function() Do(DoSave) end)
-	ReloadBtn.MouseButton1Click:Connect(function() Do(Load) end)
-
-	local SetBtn = make("TextButton", { LayoutOrder = 9, Size = UDim2.new(1, 0, 0, 22), BackgroundTransparency = 1,
-		Font = Enum.Font.SourceSans, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = Color3.fromRGB(90, 160, 255), Text = "⚙ Настройки плейса…", Visible = false }, Root)
-	SetBtn.MouseButton1Click:Connect(function()
+	Click(SaveBtn, function() Do(DoSave) end)
+	Click(ReloadBtn, function() Do(Load) end)
+	Click(SetBtn, function()
 		SW.Enabled = true
 		Do(Load)
 	end)
-	task.spawn(function()
-		while true do
-			SetBtn.Visible = State.Found and State.Place == "ready"
-			task.wait(0.5)
+
+	-- ===== Команды из приложения =====
+	OnCommand = function(Cmd)
+		if Working then
+			SetInfo("Плагин занят, команда «" .. Cmd .. "» пропущена", Yellow)
+			return
 		end
-	end)
+		if Cmd == "pull" then
+			Run("Pull", DoPull)
+		elseif Cmd == "preview" then
+			Run("Push: предпросмотр", DoPreview)
+		elseif Cmd == "undo" then
+			if not UndoJ then
+				SetInfo("Нечего отменять", Yellow)
+				return
+			end
+			Run("Отмена", DoUndo)
+		elseif Cmd == "apply" then
+			if not Pending then
+				SetInfo("Нечего применять: сначала сделайте предпросмотр", Yellow)
+				return
+			end
+			Run("Применяю", DoApply)
+		end
+	end
 end

@@ -31,28 +31,6 @@ Workspace "Workspace"  [Scene/Workspace.bridge]
     Model "Mushroom 2"  (+4)
     Model "Robot"  (+19)
     Model "Sign"  (+5)
-  Model "Drooling Zombie"
-    Script "Animate"  (+17)
-    Configuration "Animations"  (+2)
-    BillboardGui "BillboardGui"  (+1)
-    BodyColors "Body Colors"
-    Configuration "Configurations"  (+4)
-    Part "Head"  (+2)
-    Humanoid "Humanoid"
-    Part "HumanoidRootPart"  (+2)
-    Part "Left Arm"
-    Part "Left Leg"
-    Sound "Moan"
-    Configuration "ModuleScripts"  (+6)
-    Part "Right Arm"
-    Part "Right Leg"
-    Script "Script"
-    Part "Torso"  (+5)
-    CharacterMesh "Zombie Left Arm"
-    CharacterMesh "Zombie Left Leg"
-    CharacterMesh "Zombie Right Arm"
-    CharacterMesh "Zombie Right Leg"
-    CharacterMesh "Zombie torso"
   Model "Magic Crystal"
     Part "Base Ring"
     Part "Core"  (+2)
