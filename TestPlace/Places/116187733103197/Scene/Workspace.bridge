@@ -72,6 +72,104 @@ Workspace "Workspace" AirDensity=0.001 AirTurbulenceIntensity=0 AllowThirdPartyS
             Part "Post R" Size=0.4,3.6,0.4 Anchored CFrame=42.2,1.8,34.2 Color=#6B4423 Material=Wood
         }
     }
+    Model "Drooling Zombie" #"SoldierEnemy" #"ZombieFriend" {
+        Script "Animate" @src="Scripts/Workspace/Drooling Zombie/Animate.lua" {
+            StringValue "climb" {
+                Animation "ClimbAnim" AnimationContent="http://www.roblox.com/asset/?id=125750800"
+            }
+            StringValue "fall" {
+                Animation "FallAnim" AnimationContent="http://www.roblox.com/asset/?id=125750759"
+            }
+            StringValue "idle" {
+                Animation "Animation1" AnimationContent="http://www.roblox.com/asset/?id=125750544" {
+                    NumberValue "Weight" Value=9
+                }
+                Animation "Animation2" AnimationContent="http://www.roblox.com/asset/?id=125750618" {
+                    NumberValue "Weight" Value=1
+                }
+            }
+            StringValue "jump" {
+                Animation "JumpAnim" AnimationContent="http://www.roblox.com/asset/?id=125750702"
+            }
+            StringValue "run" {
+                Animation "RunAnim" AnimationContent="http://www.roblox.com/asset/?id=125749145"
+            }
+            StringValue "toolnone" {
+                Animation "ToolNoneAnim" AnimationContent="http://www.roblox.com/asset/?id=125750867"
+            }
+            StringValue "walk" {
+                Animation "WalkAnim" AnimationContent="http://www.roblox.com/asset/?id=125749145"
+            }
+        }
+        Configuration "Animations" {
+            Animation "Arms" AnimationContent="http://www.roblox.com/asset/?id=183294396"
+            Animation "Attack" AnimationContent="http://www.roblox.com/asset/?id=180416148"
+        }
+        BillboardGui "BillboardGui" Size=0,100,0,30 StudsOffset=0,5,0 {
+            TextLabel "TextLabel" Size=1,0,1,0 BackgroundColor3=#FFFFFF Text="Idle" TextSize=24 Visible=false
+        }
+        BodyColors "Body Colors" HeadColor3=#3A7D15 LeftArmColor3=#27462D LeftLegColor3=#27462D RightArmColor3=#27462D RightLegColor3=#27462D TorsoColor3=#27462D
+        Configuration "Configurations" {
+            IntValue "AggroRange" Value=200
+            IntValue "Damage" Value=30
+            BoolValue "Debug"
+            IntValue "FieldOfView" Value=180
+        }
+        Part "Head" Size=2,1,1 BottomSurface=Smooth CFrame=-71.503,4.5,-86.962|-180,0,-180 Color=#3A7D15 Material=WoodPlanks TopSurface=Smooth {
+            Decal "Face" TextureContent="rbxassetid://7074882"
+            SpecialMesh "Mesh" Scale=1.25,1.25,1.25
+        }
+        Humanoid "Humanoid" WalkSpeed=10
+        Part "HumanoidRootPart" Size=2,2,1 BottomSurface=Smooth CFrame=-71.503,3,-86.962|-180,0,-180 Color=#27462D Material=WoodPlanks TopSurface=Smooth Transparency=1 {
+            BodyForce "RepulsionForce" Force=0,0,0
+            Motor6D "Root Hip" C0=0,0,0|-90,0,-180 C1=0,0,0|-90,0,-180 MaxVelocity=0.1
+        }
+        Part "Left Arm" Size=1,2,1 BottomSurface=Smooth CFrame=-70.003,3,-86.962|-180,0,-180 CanCollide=false Color=#27462D Material=WoodPlanks TopSurface=Smooth
+        Part "Left Leg" Size=1,2,1 BottomSurface=Smooth CFrame=-71.003,1,-86.962|-180,0,-180 CanCollide=false Color=#27462D Material=WoodPlanks TopSurface=Smooth
+        Sound "Moan" PlaybackSpeed=0.15 Volume=0.05
+        Configuration "ModuleScripts" {
+            ModuleScript "ROBLOX_AIUtilities" @src="Scripts/Workspace/Drooling Zombie/ModuleScripts/ROBLOX_AIUtilities.lua"
+            ModuleScript "ROBLOX_DestroyService" @src="Scripts/Workspace/Drooling Zombie/ModuleScripts/ROBLOX_DestroyService.lua"
+            ModuleScript "ROBLOX_HumanoidList" @src="Scripts/Workspace/Drooling Zombie/ModuleScripts/ROBLOX_HumanoidList.lua"
+            ModuleScript "ROBLOX_PathfindingLibrary" @src="Scripts/Workspace/Drooling Zombie/ModuleScripts/ROBLOX_PathfindingLibrary.lua"
+            ModuleScript "ROBLOX_StateMachine" @src="Scripts/Workspace/Drooling Zombie/ModuleScripts/ROBLOX_StateMachine.lua"
+            ModuleScript "ROBLOX_ZombieAI" @src="Scripts/Workspace/Drooling Zombie/ModuleScripts/ROBLOX_ZombieAI.lua"
+        }
+        Part "Right Arm" Size=1,2,1 BottomSurface=Smooth CFrame=-73.003,3,-86.962|-180,0,-180 CanCollide=false Color=#27462D Material=WoodPlanks TopSurface=Smooth
+        Part "Right Leg" Size=1,2,1 BottomSurface=Smooth CFrame=-72.003,1,-86.962|-180,0,-180 CanCollide=false Color=#27462D Material=WoodPlanks TopSurface=Smooth
+        Script "Script" @src="Scripts/Workspace/Drooling Zombie/Script.lua"
+        Part "Torso" Size=2,2,1 BottomSurface=Smooth CFrame=-71.503,3,-86.962|-180,0,-180 Color=#27462D Material=WoodPlanks TopSurface=Smooth {
+            Motor6D "Left Hip" C0=-1,-1,0|0,-90,0 C1=-0.5,1,0|0,-90,0 MaxVelocity=0.1
+            Motor6D "Left Shoulder" C0=-1,0.5,0|0,-90,0 C1=0.5,0.5,0|0,-90,0 MaxVelocity=0.1
+            Motor6D "Neck" C0=0,1,0|-90,0,-180 C1=0,-0.5,0|-90,0,-180 MaxVelocity=0.1
+            Motor6D "Right Hip" C0=1,-1,0|0,90,0 C1=0.5,1,0|0,90,0 MaxVelocity=0.1
+            Motor6D "Right Shoulder" C0=1,0.5,0|0,90,0 C1=-0.5,0.5,0|0,90,0 MaxVelocity=0.1
+        }
+        CharacterMesh "Zombie Left Arm" BodyPart=LeftArm MeshContent="rbxassetid://37683097" MeshId=37683097 OverlayTextureContent="rbxassetid://37686282" OverlayTextureId=37686282
+        CharacterMesh "Zombie Left Leg" BodyPart=LeftLeg MeshContent="rbxassetid://37683150" MeshId=37683150 OverlayTextureContent="rbxassetid://37687646" OverlayTextureId=37687646
+        CharacterMesh "Zombie Right Arm" BodyPart=RightArm MeshContent="rbxassetid://37683174" MeshId=37683174 OverlayTextureContent="rbxassetid://37686282" OverlayTextureId=37686282
+        CharacterMesh "Zombie Right Leg" BodyPart=RightLeg MeshContent="rbxassetid://37683227" MeshId=37683227 OverlayTextureContent="rbxassetid://37687646" OverlayTextureId=37687646
+        CharacterMesh "Zombie torso" BodyPart=Torso MeshContent="rbxassetid://37683263" MeshId=37683263 OverlayTextureContent="rbxassetid://37686282" OverlayTextureId=37686282
+    }
+    Model "Magic Crystal" $Charge=100 $State="idle" {
+        Part "Base Ring" Size=5,0.4,5 Anchored CFrame=106.192,3.1,12.616 Color=#7B5CFF Material=Neon Shape=Cylinder Transparency=0.2
+        Part "Core" Size=2.5,3.5,2.5 Anchored CFrame=106.192,5,12.616 CanCollide=false Color=#7B5CFF Material=Neon Shape=Ball Transparency=0.15 {
+            PointLight "Aura" Brightness=4 Color=#9B7BFF Range=18 Shadows
+            ParticleEmitter "Sparkles" LightEmission=1 Rate=12 Speed=2,4 SpreadAngle=180,180
+        }
+        Part "Crystal Tip" Size=1.2,2.2,1.2 Anchored CFrame=106.192,7.5,12.616 CanCollide=false Color=#B49BFF Material=Glass Shape=Ball Transparency=0.3
+        Script "CrystalController" @src="Scripts/Workspace/Magic Crystal/CrystalController.lua"
+        Sound "Hum" Looped RollOffMaxDistance=40 RollOffMinDistance=5 Volume=0.4
+        Part "Pedestal" Size=4,1,4 Anchored CFrame=106.192,3.5,12.616 Color=#2B2B3D Material=Slate Shape=Cylinder
+        Part "ProximityTrigger" Size=10,10,10 Anchored CFrame=106.192,5,12.616 CanCollide=false Transparency=1 {
+            LocalScript "ProximityEffect" @src="Scripts/Workspace/Magic Crystal/ProximityTrigger/ProximityEffect.lua"
+        }
+        Model "Shards" {
+            Part "Shard 1" Size=0.4,1.2,0.4 Anchored CFrame=108.192,6,13.616 CanCollide=false Color=#9B7BFF Material=Neon
+            Part "Shard 2" Size=0.3,0.9,0.3 Anchored CFrame=104.192,5.5,11.616 CanCollide=false Color=#9B7BFF Material=Neon
+            Part "Shard 3" Size=0.35,1,0.35 Anchored CFrame=107.192,7,10.616 CanCollide=false Color=#9B7BFF Material=Neon
+        }
+    }
     SpawnLocation "SpawnLocation" Size=8,1,8 Anchored BottomSurface=Smooth CFrame=0,1.5,0 Duration=0 TopSurface=Smooth {
         Decal "Decal" Face=Top TextureContent="rbxasset://textures/SpawnLocation.png"
     }
@@ -92,6 +190,8 @@ Workspace "Workspace" AirDensity=0.001 AirTurbulenceIntensity=0 AllowThirdPartyS
             Part "Twin" Size=2,2,2 Anchored CFrame=-4,2,-12 Color=#FF4B4B Material=SmoothPlastic
             Part "Twin" Size=2,2,2 Anchored CFrame=4,2,-12 Color=#3DA5FF Material=SmoothPlastic
         }
+        Script "InlineBlock" @src="Scripts/Workspace/Test Lobby/InlineBlock.lua"
+        Script "InlineOne" @src="Scripts/Workspace/Test Lobby/InlineOne.lua"
         Model "Light Station" @file="Scene/Workspace/Test Lobby/Light Station.bridge"
         Model "Materials Station" @file="Scene/Workspace/Test Lobby/Materials Station.bridge"
         Part "Plaza" Size=1,40,40 Anchored CFrame=0,0.5,0|0,0,90 Color=#E8E2D0 Material=Concrete Shape=Cylinder

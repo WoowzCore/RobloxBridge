@@ -149,6 +149,31 @@ public static class Bridge{
         string[] Lines = Text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
 
         for(int I = 0; I < Lines.Length; I++){
+            string Trim = Lines[I].TrimEnd();
+
+            // Блок: ... @code=<<<  строки  >>>
+            if(Trim.EndsWith("@code=<<<")){
+                int          First  = I;
+                List<string> Body   = [];
+                string       Tail   = "";
+                bool         Closed = false;
+
+                I++;
+                while(I < Lines.Length){
+                    string T = Lines[I].TrimStart();
+                    if(T.StartsWith(">>>")){ Tail = T.Substring(3); Closed = true; break; }
+
+                    Body.Add(Lines[I]);
+                    I++;
+                }
+
+                if(!Closed){ Problems.Add($"{FileName}:{First + 1}: блок @code=<<< не закрыт (нужна строка >>>)"); }
+
+                string Joined = Trim.Substring(0, Trim.Length - 3) + Quote(__Dedent(Body)) + Tail;
+                __ParseLine(Joined, First + 1, FileName, Roots, Open, Problems);
+                continue;
+            }
+
             __ParseLine(Lines[I], I + 1, FileName, Roots, Open, Problems);
         }
 
@@ -157,6 +182,22 @@ public static class Bridge{
         }
 
         return Roots;
+    }
+
+    /// Срезает общий отступ у строк блока кода.
+    private static string __Dedent(List<string> L){
+        int Min = int.MaxValue;
+
+        foreach(string S in L){
+            if(S.Trim().Length == 0){ continue; }
+
+            int N = 0;
+            while(N < S.Length && (S[N] == ' ' || S[N] == '\t')){ N++; }
+            Min = Math.Min(Min, N);
+        }
+
+        if(Min == int.MaxValue){ Min = 0; }
+        return string.Join("\n", L.Select(S => S.Length >= Min ? S.Substring(Min) : S.TrimStart()));
     }
 
     private static void __ParseLine(string L, int No, string FileName, List<BridgeNode> Roots, Stack<BridgeNode> Open, List<string> Problems){
@@ -229,6 +270,10 @@ public static class Bridge{
                 if(V == null){ Problems.Add($"{Where}: ожидается @{Key}=\"путь\""); Bad = true; break; }
 
                 if(Key == "src"){       N.AtSrc  = V; }
+                else if(Key == "code"){
+                    N.Props.RemoveAll(P => P.Key == "Source");
+                    N.Props.Add(new BridgeProp("Source", V, BridgeKind.Str));
+                }
                 else if(Key == "file"){ N.AtFile = V; }
                 else{                   Problems.Add($"{Where}: неизвестная директива @{Key}"); }
 
@@ -624,7 +669,7 @@ public static class Bridge{
                 if(Full == null){            Problems.Add($"{N.Origin}: недопустимый путь @src \"{N.AtSrc}\""); }
                 else if(!File.Exists(Full)){ Problems.Add($"{N.Origin}: файл @src не найден: {N.AtSrc}"); }
                 else{
-                    N.Props.RemoveAll(P => P.Key == "Source");
+                    N.Props.RemoveAll(X => X.Key == "Source");
                     N.Props.Add(new BridgeProp("Source", File.ReadAllText(Full), BridgeKind.Str));
                 }
 
@@ -770,6 +815,13 @@ public static class Bridge{
 - Ссылки на объекты: `Part0=@"Workspace/Door/Frame"` (имена от сервиса через `/`; у братьев с одинаковым именем второй — `Имя~2`).
 - ID у объектов нет: объект определяется путём. Переименование = удаление + создание.
 - Скрипт: в .bridge только `Script "Имя" @src="Scripts/.../Имя.lua"`, код — в .lua. Новый скрипт = новый .lua + строка в .bridge.
+- Короткий скрипт можно писать прямо в .bridge: `Script "Имя" @code="print(1)\nprint(2)"` или блоком (`>>>` на отдельной строке закрывает блок):
+
+    Script "Имя" @code=<<<
+        print("hi")
+    >>>
+
+После Pull такой скрипт будет вынесен в `Scripts/*.lua`. Если есть и `@src`, и `@code`, побеждает `@src`.
 - Новый .bridge-файл подключай объектом без `{}` с `@file="Scene/.../Файл.bridge"`; файл содержит дочерние объекты.
 - Комментарии `//` допустимы, но при следующем Pull пропадут. Порядок объектов не важен (приложение сортирует).
 
