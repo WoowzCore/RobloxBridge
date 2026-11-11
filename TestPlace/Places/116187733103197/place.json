@@ -1,0 +1,26 @@
+{
+  "PlaceId": 116187733103197,
+  "Created": "2026-11-09T18:59:37.2330851\u002B03:00",
+  "Services": [
+    "Workspace",
+    "Lighting",
+    "MaterialService",
+    "ReplicatedFirst",
+    "ReplicatedStorage",
+    "ServerScriptService",
+    "ServerStorage",
+    "StarterGui",
+    "StarterPack",
+    "StarterPlayer",
+    "Teams",
+    "SoundService"
+  ],
+  "Ignore": [
+    "Workspace/Camera"
+  ],
+  "AutoSplit": 0,
+  "Splits": {
+    "Workspace/Classic House/House/FirstFloor": "Scene/Workspace/Classic House/House/FirstFloor.bridge",
+    "Workspace/Classic House/House/Roof": "Scene/Workspace/Classic House/House/Roof.bridge"
+  }
+}

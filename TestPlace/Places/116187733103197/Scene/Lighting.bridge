@@ -1,0 +1,7 @@
+Lighting "Lighting" Ambient=#464646 Brightness=3 ColorShift_Bottom=#000000 ColorShift_Top=#000000 EnvironmentDiffuseScale=1 EnvironmentSpecularScale=1 ExposureCompensation=0 FogColor=#C0C0C0 FogEnd=100000 FogStart=0 GeographicLatitude=0 GlobalShadows LightingStyle=Soft OutdoorAmbient=#464646 PrioritizeLightingQuality ShadowSoftness=0.2 TimeOfDay="14:30:00" $RBX_LightingTechnologyUnifiedMigration $RBX_OriginalTechnologyOnFileLoad=3 {
+    Atmosphere "Atmosphere" Color=#C7C7C7 Decay=#6A707D Density=0.3 Offset=0.25
+    BloomEffect "Bloom" Intensity=1 Threshold=2
+    DepthOfFieldEffect "DepthOfField" Enabled=false FarIntensity=0.1 InFocusRadius=30
+    Sky "Sky" MoonTextureContent="rbxassetid://6444320592" SkyboxBackContent="rbxassetid://6444884337" SkyboxDownContent="rbxassetid://6444884785" SkyboxFrontContent="rbxassetid://6444884337" SkyboxLeftContent="rbxassetid://6444884337" SkyboxRightContent="rbxassetid://6444884337" SkyboxUpContent="rbxassetid://6412503613" SunAngularSize=11 SunTextureContent="rbxassetid://6196665106"
+    SunRaysEffect "SunRays" Intensity=0.01 Spread=0.1
+}

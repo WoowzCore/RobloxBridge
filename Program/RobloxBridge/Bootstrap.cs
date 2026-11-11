@@ -1,10 +1,12 @@
 ﻿using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Globalization;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using WLO;
 using WLO.Math;
 
@@ -39,7 +41,9 @@ public static class Bootstrap{
 
             Settings.Load();
             
-            Dump.Log = Text => __EnqueueLog(Text, "Info");        // подставь свой Kind
+            Dump.Log = Text => __EnqueueLog(Text, "Info");
+            Sync.Log        = __EnqueueLog;
+            Sync.ProjectDir = () => Project.Current?.Dir;
             Dump.Changed = () => __Post("DumpState", Dump.Snapshot());
             Dump.Open();
             
@@ -310,6 +314,13 @@ public static class Bootstrap{
     }
 
     private static void __HandleRequest(HttpListenerContext Context){
+        try{
+            if(Sync.TryHandle(Context.Request.Url?.AbsolutePath ?? "", Context.Request, Context.Response)){ return; }
+        }catch(Exception e){
+            WL.Logger.Warn("Sync: не удалось отправить ответ.", e);
+            return;
+        }
+
         int    Code;
         string Body;
 
@@ -432,54 +443,229 @@ private static (int Code, string Body) __Route(HttpListenerRequest Request){
     }
 }
 
+public sealed class SyncReply{
+    public int Code = 200;
+    public object Body = new{ status = "ok" };
+    public string Text = "";
+    public List<string> Lines = [];
+}
+
+public sealed class DiffOp{
+    public string Op = "";              // create | set | delete
+    public string Path = "";
+    public string Name = "";
+    public string Class = "";
+    public bool Nested;                 // создаётся внутри другого создаваемого объекта
+    public int Inner;                   // сколько вложенных создаётся вместе с этим
+    public List<BridgeProp> Set = [];
+    public List<string> Reset = [];
+    public List<BridgeProp> AttrSet = [];
+    public List<string> AttrDel = [];
+    public List<string>? Tags;
+    public List<string> Notes = [];
+}
+
+public static class Diff{
+    // Что нужно сделать с Current, чтобы получить Wanted.
+    public static List<DiffOp> Compute(IEnumerable<BridgeNode> Current, IEnumerable<BridgeNode> Wanted){
+        List<DiffOp> Ops = [];
+        __Level("", Current, Wanted, Ops);
+        return Ops;
+    }
+
+    private static string __Esc(string Name){ return Name.Replace("%", "%25").Replace("/", "%2F"); }
+
+    // Сегменты путей: одинаковые братья после сортировки (имя, класс) получают ~2, ~3...
+    private static List<(string Key, BridgeNode Node)> __Keyed(IEnumerable<BridgeNode> Nodes){
+        List<(string Key, BridgeNode Node)> Res = [];
+        string? Prev = null;
+        int Dup = 0;
+        foreach(BridgeNode N in Nodes.OrderBy(X => X.Name, StringComparer.Ordinal).ThenBy(X => X.Class, StringComparer.Ordinal)){
+            if(N.Name == Prev){ Dup++; }else{ Dup = 1; Prev = N.Name; }
+            Res.Add((__Esc(N.Name) + (Dup > 1 ? "~" + Dup : ""), N));
+        }
+        return Res;
+    }
+
+    private static void __Level(string Parent, IEnumerable<BridgeNode> Cur, IEnumerable<BridgeNode> Want, List<DiffOp> Ops){
+        Dictionary<string, BridgeNode> C = new(), W = new();
+        foreach(var K in __Keyed(Cur)){ C[K.Key] = K.Node; }
+        foreach(var K in __Keyed(Want)){ W[K.Key] = K.Node; }
+
+        foreach(string Key in C.Keys.Union(W.Keys).OrderBy(K => K, StringComparer.Ordinal)){
+            string At = Parent == "" ? Key : Parent + "/" + Key;
+            C.TryGetValue(Key, out BridgeNode? A);
+            W.TryGetValue(Key, out BridgeNode? B);
+            if(A != null && B != null && A.Class == B.Class){
+                DiffOp? Op = __Props(At, A, B);
+                if(Op != null){ Ops.Add(Op); }
+                __Level(At, A.Children, B.Children, Ops);
+            }else{
+                if(A != null){ Ops.Add(new DiffOp{ Op = "delete", Path = At, Name = A.Name, Class = A.Class }); }
+                if(B != null){ __Create(At, B, false, Ops); }
+            }
+        }
+    }
+
+    private static int __Create(string At, BridgeNode N, bool Nested, List<DiffOp> Ops){
+        DiffOp Op = new(){ Op = "create", Path = At, Name = N.Name, Class = N.Class, Nested = Nested,
+            Set = [..N.Props], AttrSet = [..N.Attrs], Tags = [..N.Tags] };
+        Ops.Add(Op);
+        int Total = 0;
+        foreach(var K in __Keyed(N.Children)){ Total += 1 + __Create(At + "/" + K.Key, K.Node, true, Ops); }
+        Op.Inner = Total;
+        return Total;
+    }
+
+    private static DiffOp? __Props(string At, BridgeNode A, BridgeNode B){
+        DiffOp Op = new(){ Op = "set", Path = At, Name = B.Name, Class = B.Class };
+        __Compare(A.Props, B.Props, Op.Set, Op.Reset, Op.Notes, "", true);
+        __Compare(A.Attrs, B.Attrs, Op.AttrSet, Op.AttrDel, Op.Notes, "$", false);
+        List<string> TA = [..A.Tags.Order(StringComparer.Ordinal)], TB = [..B.Tags.Order(StringComparer.Ordinal)];
+        if(!TA.SequenceEqual(TB)){
+            Op.Tags = TB;
+            Op.Notes.Add($"Теги: [{string.Join(", ", TA)}] → [{string.Join(", ", TB)}]");
+        }
+        bool Any = Op.Set.Count + Op.Reset.Count + Op.AttrSet.Count + Op.AttrDel.Count > 0 || Op.Tags != null;
+        return Any ? Op : null;
+    }
+
+    private static void __Compare(List<BridgeProp> Cur, List<BridgeProp> Want, List<BridgeProp> Set, List<string> Reset, List<string> Notes, string Mark, bool IsProps){
+        Dictionary<string, BridgeProp> C = new(), W = new();
+        foreach(BridgeProp P in Cur){ C[P.Key] = P; }
+        foreach(BridgeProp P in Want){ W[P.Key] = P; }
+        foreach(BridgeProp P in W.Values.OrderBy(X => X.Key, StringComparer.Ordinal)){
+            C.TryGetValue(P.Key, out BridgeProp? Old);
+            if(Old != null && __Sig(Old) == __Sig(P)){ continue; }
+            Set.Add(P);
+            Notes.Add($"{Mark}{P.Key}: {__Show(Old)} → {__Show(P)}");
+        }
+        foreach(BridgeProp P in C.Values.OrderBy(X => X.Key, StringComparer.Ordinal)){
+            if(W.ContainsKey(P.Key)){ continue; }
+            if(IsProps && P.Key == "Source"){ continue; }   // отсутствие Source в файле не сбрасывает код скрипта
+            Reset.Add(P.Key);
+            Notes.Add($"{Mark}{P.Key}: {__Show(P)} → (по умолчанию)");
+        }
+    }
+
+    private static string __Sig(BridgeProp P){
+        return (P.Kind == BridgeKind.Raw ? "r:" : P.Kind == BridgeKind.Str ? "s:" : "f:") + __Norm(P);
+    }
+
+    // Числа приводятся к единому виду, чтобы 3.0 и 3 считались одинаковыми
+    private static string __Norm(BridgeProp P){
+        if(P.Kind == BridgeKind.Str){ return P.Key == "Source" ? P.Value.Replace("\r\n", "\n") : P.Value; }
+        if(P.Kind == BridgeKind.Ref){ return P.Value; }
+        return string.Join("|", P.Value.Split('|').Select(H => string.Join(",", H.Split(',').Select(T =>
+            double.TryParse(T, NumberStyles.Float, CultureInfo.InvariantCulture, out double D) ? Bridge.Num(D) : T.ToUpperInvariant()))));
+    }
+
+    private static string __Show(BridgeProp? P){
+        if(P == null){ return "(по умолчанию)"; }
+        if(P.Key == "Source"){ return P.Value.Split('\n').Length + " строк"; }
+        string V = P.Kind == BridgeKind.Str ? "\"" + P.Value.Replace("\n", "\\n") + "\"" : P.Kind == BridgeKind.Ref ? "@\"" + P.Value + "\"" : P.Value;
+        return V.Length > 40 ? V[..37] + "..." : V;
+    }
+
+    public static (int Created, int Changed, int Deleted) Counts(List<DiffOp> Ops){
+        return (Ops.Count(O => O.Op == "create"), Ops.Count(O => O.Op == "set"), Ops.Count(O => O.Op == "delete"));
+    }
+
+    // + создастся, ~ изменится, - удалится
+    public static List<string> Render(List<DiffOp> Ops, int Max = 300){
+        List<string> L = [];
+        foreach(DiffOp Op in Ops){
+            if(Op.Nested){ continue; }
+            if(Op.Op == "create"){ L.Add($"+ {Op.Path} ({Op.Class})" + (Op.Inner > 0 ? $"  +{Op.Inner} вложенных" : "")); }
+            else if(Op.Op == "delete"){ L.Add($"- {Op.Path} ({Op.Class})"); }
+            else{
+                L.Add($"~ {Op.Path}");
+                foreach(string N in Op.Notes){ L.Add("      " + N); }
+            }
+        }
+        if(L.Count > Max){ int More = L.Count - Max; L.RemoveRange(Max, More); L.Add($"… ещё строк: {More}"); }
+        return L;
+    }
+
+    private static string __F(BridgeKind K){ return K == BridgeKind.Str ? "s" : K == BridgeKind.Ref ? "f" : "r"; }
+
+    // Операции для плагина
+    public static List<object> Plain(List<DiffOp> Ops){
+        return Ops.Select(O => (object)new{
+            op = O.Op, path = O.Path, name = O.Name, @class = O.Class,
+            set = O.Set.Select(P => new{ k = P.Key, v = P.Value, f = __F(P.Kind) }).ToList(),
+            reset = O.Reset,
+            attrs = O.AttrSet.Select(P => new{ k = P.Key, v = P.Value, f = __F(P.Kind) }).ToList(),
+            adel = O.AttrDel,
+            tags = O.Tags
+        }).ToList();
+    }
+
+    public static string Token(List<object> Plain){
+        byte[] Data = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(Plain));
+        return Convert.ToHexString(SHA256.HashData(Data))[..16];
+    }
+}
+
 public static class Pull{
-    private static readonly JsonSerializerOptions __Json = new(){ WriteIndented = true, IncludeFields = true };
+    public static readonly JsonSerializerOptions Json = new(){ WriteIndented = true, IncludeFields = true, PropertyNameCaseInsensitive = true };
 
-    // Принимает тело POST /pull, пишет файлы, возвращает итоговое сообщение. Ошибки - InvalidOperationException.
-    public static string Run(string PlaceDir, PlaceData Place, string BodyJson){
-        using JsonDocument Doc = JsonDocument.Parse(BodyJson);
+    public static int Threshold(PlaceData P){ return P.AutoSplit <= 0 ? int.MaxValue : P.AutoSplit; }
+    
+    // Состояние Studio из JSON запроса: только сервисы из Services, без Ignore
+    public static List<BridgeNode> ReadStudio(JsonElement Root, PlaceData Place, out int Count){
+        int N = 0;
+        List<BridgeNode> Res = [];
+        if(Root.TryGetProperty("services", out JsonElement Svc) && Svc.ValueKind == JsonValueKind.Object){
+            foreach(JsonProperty P in Svc.EnumerateObject()){
+                if(!Place.Services.Contains(P.Name)){ continue; }
+                Res.Add(__Node(P.Value, ref N));
+            }
+        }
+        Count = N;
+        return [..Bridge.Filter(Res, Place.Services, Place.Ignore)];
+    }
+
+    public static SyncReply Run(string PlaceDir, PlaceData Place, JsonObject Req){
+        using JsonDocument Doc = JsonDocument.Parse(Req.ToJsonString());
         JsonElement Root = Doc.RootElement;
-        if(!Root.TryGetProperty("services", out JsonElement Svc) || Svc.ValueKind != JsonValueKind.Object){
-            throw new InvalidOperationException("В запросе нет services");
-        }
-
-        int Count = 0;
-        List<BridgeNode> Fresh = [];
-        foreach(JsonProperty P in Svc.EnumerateObject()){
-            if(!Place.Services.Contains(P.Name)){ continue; }
-            Fresh.Add(__Node(P.Value, ref Count));
-        }
+        List<BridgeNode> Fresh = ReadStudio(Root, Place, out int Count);
         if(Fresh.Count == 0){ throw new InvalidOperationException("Присланные сервисы не входят в Services (place.json)"); }
 
-        // Сервисы, которых нет в запросе, берём с диска как есть - иначе WriteScene их сотрёт.
         List<string> Prob = [];
         List<BridgeNode> Old = Bridge.ReadScene(PlaceDir, Prob);
-        if(Prob.Count > 0){
-            throw new InvalidOperationException("Файлы сцены не читаются, Pull остановлен: " + string.Join("; ", Prob.Take(5)));
-        }
+        if(Prob.Count > 0){ throw new InvalidOperationException("Файлы сцены не читаются, Pull остановлен: " + string.Join("; ", Prob.Take(5))); }
 
-        List<BridgeNode> All = [..Old.Where(O => !Fresh.Any(F => F.Name == O.Name)), ..Fresh];
+        HashSet<string> Names = [..Fresh.Select(F => F.Name)];
+        List<BridgeNode> OldView = [..Bridge.Filter(Old, Place.Services, Place.Ignore)];
+        List<DiffOp> Ops = Diff.Compute(OldView.Where(O => Names.Contains(O.Name)), Fresh);
+
+        // Сервисы, которых нет в запросе, берём с диска как есть
+        List<BridgeNode> All = [..Old.Where(O => !Names.Contains(O.Name)), ..Fresh];
         List<BridgeNode> Result = [..Bridge.Filter(All, Place.Services, Place.Ignore)];
 
         List<string> Warn = [];
-        Bridge.WriteScene(PlaceDir, Result, Place.Splits, 150, Warn);
+        Bridge.WriteScene(PlaceDir, Result, Place.Splits, Threshold(Place), Warn);
         Bridge.WriteMeta(PlaceDir, Result, Place.Splits);
         __SavePlace(PlaceDir, Place);
 
-        string Names = string.Join(", ", Fresh.Select(F => F.Name));
-        string Text = $"Pull: {Names}, объектов {Count}";
+        var C = Diff.Counts(Ops);
+        string Text = $"Pull: {string.Join(", ", Names)}, объектов {Count}. В файлах: +{C.Created} ~{C.Changed} −{C.Deleted}";
+        if(C.Created + C.Changed + C.Deleted == 0){ Text = $"Pull: {string.Join(", ", Names)}, объектов {Count}. Файлы не изменились"; }
         if(Root.TryGetProperty("skipped", out JsonElement Sk) && Sk.ValueKind == JsonValueKind.Object){
-            string List = string.Join(", ", Sk.EnumerateObject().Select(S => $"{S.Name}×{S.Value}"));
-            if(List.Length > 0){ Text += ". Не сохранено по типам: " + List; }
+            string Types = string.Join(", ", Sk.EnumerateObject().Select(S => $"{S.Name}×{S.Value}"));
+            if(Types.Length > 0){ Text += ". Не сохранено по типам: " + Types; }
         }
         if(Warn.Count > 0){ Text += ". Замечаний: " + Warn.Count; }
-        return Text;
+
+        List<string> Lines = Diff.Render(Ops);
+        return new SyncReply{ Text = Text, Lines = Lines, Body = new{ status = "ok", text = Text, lines = Lines } };
     }
 
     // Если у тебя уже есть метод записи place.json - вызови его вместо этого.
     private static void __SavePlace(string PlaceDir, PlaceData Place){
         string Target = Path.Combine(PlaceDir, "place.json");
-        string Text = JsonSerializer.Serialize(Place, __Json);
+        string Text = JsonSerializer.Serialize(Place, Json);
         if(!File.Exists(Target) || File.ReadAllText(Target) != Text){ File.WriteAllText(Target, Text); }
     }
 
@@ -529,16 +715,257 @@ public static class Pull{
         switch(T.GetString()){
             case "b": Prop = new(Key, X.GetBoolean() ? "true" : "false"); return true;
             case "n": Prop = new(Key, Bridge.Num(X.GetDouble())); return true;
-            case "s": Prop = new(Key, X.GetString() ?? "", BridgeKind.Str); return true;
+            case "s": case "ct": Prop = new(Key, X.GetString() ?? "", BridgeKind.Str); return true;
             case "e": Prop = new(Key, X.GetString() ?? ""); return true;
             case "v2": case "v3": case "u": case "u2": case "nr": case "rc":
                 Prop = new(Key, __Join(X)); return true;
             case "c3":
                 Prop = new(Key, $"#{X[0].GetInt32():X2}{X[1].GetInt32():X2}{X[2].GetInt32():X2}"); return true;
+            case "cf": {
+                double[] N = X.EnumerateArray().Select(E => E.GetDouble()).ToArray();
+                string Pos = string.Join(",", N.Take(3).Select(D => Bridge.Num(D)));
+                bool Rot = N.Skip(3).Any(D => Math.Abs(D) >= 0.0005);
+                Prop = new(Key, Rot ? Pos + "|" + string.Join(",", N.Skip(3).Select(D => Bridge.Num(D))) : Pos);
+                return true;
+            }
         }
         return false;
     }
 }
+
+public static class Push{
+    public static SyncReply Run(string PlaceDir, PlaceData Place, JsonObject Req){
+        using JsonDocument Doc = JsonDocument.Parse(Req.ToJsonString());
+        List<BridgeNode> Studio = Pull.ReadStudio(Doc.RootElement, Place, out int _);
+
+        List<string> Prob = [];
+        List<BridgeNode> Disk = [..Bridge.Filter(Bridge.ReadScene(PlaceDir, Prob), Place.Services, Place.Ignore)];
+        if(Prob.Count > 0){ throw new InvalidOperationException("Файлы сцены не читаются: " + string.Join("; ", Prob.Take(5))); }
+        if(Disk.Count == 0){ throw new InvalidOperationException("В папке плейса нет файлов сцены. Сначала сделай Pull."); }
+
+        // Трогаем только сервисы, для которых есть файл
+        HashSet<string> Names = [..Disk.Select(D => D.Name)];
+        List<string> Lines = [];
+        foreach(BridgeNode S in Studio.Where(S => !Names.Contains(S.Name))){ Lines.Add($"x {S.Name}: нет файла сцены, не трогаю"); }
+
+        List<DiffOp> Ops = Diff.Compute(Studio.Where(S => Names.Contains(S.Name)), Disk);
+        List<object> Plain = Diff.Plain(Ops);
+        string Token = Diff.Token(Plain);
+        var C = Diff.Counts(Ops);
+
+        bool Apply = (bool?)Req["apply"] ?? false;
+        if(Apply && (string?)Req["token"] != Token){
+            return new SyncReply{ Code = 409, Text = "Push отменён: Studio или файлы изменились после предпросмотра",
+                Body = new{ error = "Studio или файлы изменились после предпросмотра. Сделай предпросмотр заново.", changed = true } };
+        }
+
+        Lines.AddRange(Diff.Render(Ops));
+        string Text = Apply
+            ? $"Push: применяется +{C.Created} ~{C.Changed} −{C.Deleted}"
+            : $"Push, предпросмотр: создастся {C.Created}, изменится {C.Changed}, удалится {C.Deleted}";
+        return new SyncReply{
+            Text = Text,
+            Lines = Apply ? [] : Lines,
+            Body = new{ status = "ok", token = Token, counts = new{ created = C.Created, changed = C.Changed, deleted = C.Deleted }, lines = Lines, ops = Plain }
+        };
+    }
+}
+
+public static class Splitter{
+    public static SyncReply Run(string PlaceDir, PlaceData Place, string At, bool On){
+        if(At == "" || !At.Contains('/')){ throw new InvalidOperationException("Нужен путь объекта внутри сервиса (например Workspace/Door). Сервис целиком выносить нельзя."); }
+
+        List<string> Prob = [];
+        List<BridgeNode> Scene = [..Bridge.Filter(Bridge.ReadScene(PlaceDir, Prob), Place.Services, Place.Ignore)];
+        if(Prob.Count > 0){ throw new InvalidOperationException("Файлы сцены не читаются: " + string.Join("; ", Prob.Take(5))); }
+        if(!__Has(Scene, At.Split('/'), 0)){ throw new InvalidOperationException($"В файлах сцены нет объекта «{At}». Сначала сделай Pull."); }
+
+        string? OldFile = null;
+        string NewFile = $"Scene/{At}.bridge";
+        if(On){
+            if(Place.Splits.TryGetValue(At, out string? Have)){ throw new InvalidOperationException($"«{At}» уже вынесен в {Have}"); }
+            Place.Splits[At] = NewFile;
+        }else{
+            if(!Place.Splits.Remove(At, out OldFile)){ throw new InvalidOperationException($"«{At}» не вынесен, возвращать нечего"); }
+        }
+
+        List<string> Warn = [];
+        Bridge.WriteScene(PlaceDir, Scene, Place.Splits, Pull.Threshold(Place), Warn);
+        Bridge.WriteMeta(PlaceDir, Scene, Place.Splits);
+
+        string Text;
+        if(On){
+            Text = $"Вынесено: {At} → {NewFile}";
+        }else if(Place.Splits.ContainsKey(At)){
+            Text = $"«{At}» снова вынесен автоматически (больше {Place.AutoSplit} строк). Поставь \"AutoSplit\": 0 в place.json, чтобы решал только ты.";
+        }else{
+            Text = $"Возвращено в общий файл: {At}";
+            string Full = System.IO.Path.GetFullPath(System.IO.Path.Combine(PlaceDir, OldFile ?? ""));
+            if(OldFile != null && Full.StartsWith(System.IO.Path.GetFullPath(PlaceDir)) && File.Exists(Full)){ File.Delete(Full); }
+        }
+        if(Warn.Count > 0){ Text += ". Замечаний: " + Warn.Count; }
+
+        File.WriteAllText(System.IO.Path.Combine(PlaceDir, "place.json"), JsonSerializer.Serialize(Place, Pull.Json));
+
+        List<string> Lines = ["Вынесено сейчас:"];
+        foreach(var S in Place.Splits.OrderBy(X => X.Key, StringComparer.Ordinal)){ Lines.Add($"  {S.Key} → {S.Value}"); }
+        if(Place.Splits.Count == 0){ Lines.Add("  (ничего)"); }
+        return new SyncReply{ Text = Text, Lines = [], Body = new{ status = "ok", text = Text, lines = Lines } };
+    }
+
+    // Те же правила путей, что в Diff: сортировка (имя, класс), одинаковые братья ~2, ~3
+    private static bool __Has(IEnumerable<BridgeNode> Level, string[] Parts, int I){
+        string? Prev = null;
+        int Dup = 0;
+        foreach(BridgeNode N in Level.OrderBy(X => X.Name, StringComparer.Ordinal).ThenBy(X => X.Class, StringComparer.Ordinal)){
+            if(N.Name == Prev){ Dup++; }else{ Dup = 1; Prev = N.Name; }
+            string Key = N.Name.Replace("%", "%25").Replace("/", "%2F") + (Dup > 1 ? "~" + Dup : "");
+            if(Key != Parts[I]){ continue; }
+            return I == Parts.Length - 1 || __Has(N.Children, Parts, I + 1);
+        }
+        return false;
+    }
+}
+
+public static class Sync{
+    public static           Action<string, string>? Log;          // (текст, "Info"/"Error")
+    public static           Func<string?>?          ProjectDir;            // папка открытого проекта
+    private static readonly object                  __Lock    = new();
+    private static          string                  __Session = "";
+    private static          JsonObject?             __Acc;
+    private static          bool                    __Dbg;
+    private static string __Cut(string S){ return S.Length > 300 ? S[..300] + "…" : S; }
+
+    // Возвращает true, если путь обработан здесь
+    public static bool TryHandle(string Route, HttpListenerRequest Req, HttpListenerResponse Res){
+        if(Route != "/config" && Route != "/pull" && Route != "/push" && Route != "/note" && Route != "/split" && Route != "/unsplit"){ return false; }
+        __Dbg = false;
+        try{
+            if(Dump.Blocking){ Reply(Res, 409, new{ error = "Нет файла Full-API-Dump: работа заблокирована" }); return true; }
+            string Body = "";
+            if(Req.HttpMethod == "POST"){
+                using StreamReader Reader = new(Req.InputStream, Encoding.UTF8);
+                Body = Reader.ReadToEnd();
+            }
+            
+            __Dbg = Route != "/note" && Req.Headers["X-Bridge-Debug"] == "1";
+            if(__Dbg){ Log?.Invoke($"[debug] → {Req.HttpMethod} {Req.Url?.PathAndQuery}, тело {Body.Length} байт: {__Cut(Body)}", "Info"); }
+
+            if(Route == "/note"){
+                using JsonDocument Doc = JsonDocument.Parse(Body);
+                if(Doc.RootElement.TryGetProperty("lines", out JsonElement Ls) && Ls.ValueKind == JsonValueKind.Array){
+                    foreach(JsonElement L in Ls.EnumerateArray().Take(80)){ Log?.Invoke(L.GetString() ?? "", "Info"); }
+                }
+                Reply(Res, 200, new{ status = "ok" });
+                return true;
+            }
+
+            __Resolve(Req, out string PlaceDir, out PlaceData Place);
+            if(Route == "/config"){
+                Reply(Res, 200, new{ services = Place.Services, ignore = Place.Ignore, splits = Place.Splits });
+                return true;
+            }
+            
+            if(Route == "/split" || Route == "/unsplit"){
+                lock(__Lock){
+                    string Target = (string?)JsonNode.Parse(Body)?["path"] ?? "";
+                    SyncReply R = Splitter.Run(PlaceDir, Place, Target, Route == "/split");
+                    Log?.Invoke(R.Text, "Info");
+                    Reply(Res, 200, R.Body);
+                }
+                return true;
+            }
+
+            lock(__Lock){
+                JsonObject? Joined = __Join(Req.QueryString["session"] ?? "", __Int(Req, "part", 1), __Int(Req, "parts", 1), Body);
+                if(Joined == null){ Reply(Res, 200, new{ status = "partial" }); return true; }
+
+                SyncReply Out = Route == "/pull" ? Pull.Run(PlaceDir, Place, Joined) : Push.Run(PlaceDir, Place, Joined);
+                if(Out.Text.Length > 0){ Log?.Invoke(Out.Text, Out.Code == 200 ? "Info" : "Error"); }
+                foreach(string L in Out.Lines.Take(60)){ Log?.Invoke(L, "Info"); }
+                if(Out.Lines.Count > 60){ Log?.Invoke($"… ещё {Out.Lines.Count - 60} строк (полностью - в окне плагина)", "Info"); }
+                Reply(Res, Out.Code, Out.Body);
+            }
+        }catch(InvalidOperationException E){
+            Log?.Invoke(E.Message, "Error");
+            Reply(Res, 400, new{ error = E.Message });
+        }catch(Exception E){
+            Log?.Invoke("Sync: " + E.Message, "Error");
+            Reply(Res, 500, new{ error = E.Message });
+        }
+        return true;
+    }
+
+    public static void Reply(HttpListenerResponse Res, int Code, object Body){
+        byte[] B = JsonSerializer.SerializeToUtf8Bytes(Body);
+        if(__Dbg){ Log?.Invoke($"[debug] ← {Code}, {B.Length} байт: {__Cut(Encoding.UTF8.GetString(B, 0, Math.Min(B.Length, 300)))}", "Info"); }
+        Res.StatusCode = Code;
+        Res.ContentType = "application/json; charset=utf-8";
+        Res.ContentLength64 = B.Length;
+        Res.OutputStream.Write(B, 0, B.Length);
+        Res.OutputStream.Close();
+    }
+
+    private static int __Int(HttpListenerRequest Req, string Key, int Def){
+        return int.TryParse(Req.QueryString[Key], out int V) ? V : Def;
+    }
+
+    // Находит папку плейса по PlaceId из запроса, проверяет игру
+    private static void __Resolve(HttpListenerRequest Req, out string PlaceDir, out PlaceData Place){
+        string Root = ProjectDir?.Invoke() ?? "";
+        string BridgeFile = Path.Combine(Root, "bridge.json");
+        if(Root.Length == 0 || !File.Exists(BridgeFile)){ throw new InvalidOperationException("Проект не открыт"); }
+        long.TryParse(Req.QueryString["place"], out long PlaceId);
+        long.TryParse(Req.QueryString["universe"], out long UniverseId);
+
+        using JsonDocument Doc = JsonDocument.Parse(File.ReadAllText(BridgeFile));
+        JsonElement J = Doc.RootElement;
+        if(J.TryGetProperty("UniverseId", out JsonElement U) && U.ValueKind == JsonValueKind.Number && U.GetInt64() != 0 && U.GetInt64() != UniverseId){
+            throw new InvalidOperationException("Этот плейс из другой игры (UniverseId не совпадает с проектом)");
+        }
+        string? Folder = null;
+        if(J.TryGetProperty("Places", out JsonElement Pl) && Pl.ValueKind == JsonValueKind.Object && Pl.TryGetProperty(PlaceId.ToString(), out JsonElement F)){
+            Folder = F.GetString();
+        }
+        if(string.IsNullOrEmpty(Folder)){ throw new InvalidOperationException("Этот плейс не добавлен в проект"); }
+        PlaceDir = Path.Combine(Root, "Places", Folder);
+        if(!Directory.Exists(PlaceDir)){ throw new InvalidOperationException("Нет папки плейса: " + PlaceDir); }
+
+        string PlaceFile = Path.Combine(PlaceDir, "place.json");
+        Place = File.Exists(PlaceFile) ? JsonSerializer.Deserialize<PlaceData>(File.ReadAllText(PlaceFile), Pull.Json) ?? new PlaceData() : new PlaceData();
+    }
+
+    // Склеивает части запроса (плагин режет большие сервисы). null - пока пришли не все части.
+    private static JsonObject? __Join(string Session, int Part, int Parts, string Body){
+        JsonObject Cur = JsonNode.Parse(Body) as JsonObject ?? throw new InvalidOperationException("Тело запроса не JSON-объект");
+        if(Part <= 1 || Session != __Session || __Acc == null){
+            __Session = Session;
+            __Acc = new JsonObject{ ["services"] = new JsonObject() };
+        }
+        JsonObject Acc = __Acc;
+        JsonObject Svc = (JsonObject)Acc["services"]!;
+        if(Cur["services"] is JsonObject In){
+            foreach(KeyValuePair<string, JsonNode?> P in In.ToList()){
+                if(P.Value == null){ continue; }
+                In.Remove(P.Key);
+                if(Svc[P.Key] is JsonObject Have && Have["k"] is JsonArray HaveKids && P.Value["k"] is JsonArray NewKids){
+                    foreach(JsonNode? Kid in NewKids.ToList()){ NewKids.Remove(Kid); HaveKids.Add(Kid); }
+                }else{
+                    Svc[P.Key] = P.Value;
+                }
+            }
+        }
+        foreach(KeyValuePair<string, JsonNode?> P in Cur.ToList()){
+            if(P.Key == "services"){ continue; }
+            Cur.Remove(P.Key);
+            Acc[P.Key] = P.Value;
+        }
+        if(Part < Parts){ return null; }
+        __Acc = null;
+        return Acc;
+    }
+}
+
 
     // ----------------------------------------------------------------------
     // Отправка в Web
@@ -616,8 +1043,8 @@ public static class Settings{
     static Data   __D    = new Data();
     static string __File = Path.Combine(AppContext.BaseDirectory, "robloxbridge.settings.json");
 
-    public static int Port{ get => __D.Port; set => __D.Port = value; }
-    public static string? LastProject{ get => __D.LastProject; set => __D.LastProject = value; }
+    public static int Port{ get => __D.Port; set{ if(__D.Port != value){ __D.Port = value; Save(); } } }
+    public static string? LastProject{ get => __D.LastProject; set{ if(__D.LastProject != value){ __D.LastProject = value; Save(); } } }
     public static string DumpPath{ get => __D.DumpPath; set => __D.DumpPath = value; }
     public static string DumpHash{ get => __D.DumpHash; set => __D.DumpHash = value; }
     public static string DumpStudio{ get => __D.DumpStudio; set => __D.DumpStudio = value; }
@@ -656,6 +1083,8 @@ public sealed class PlaceData{
 
     public List<string> Services { get; set; } = [..Bridge.DefaultServices];
     public List<string> Ignore   { get; set; } = [..Bridge.DefaultIgnore];
+    
+    public int AutoSplit { get; set; } = 0;   // 0 = автоматический вынос выключен
 
     /// Путь объекта -> файл .bridge (относительно папки плейса). Заполняется и вручную, и автоматически.
     public Dictionary<string, string> Splits { get; set; } = [];

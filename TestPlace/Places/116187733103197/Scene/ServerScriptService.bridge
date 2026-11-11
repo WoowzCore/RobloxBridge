@@ -1,0 +1,3 @@
+ServerScriptService "ServerScriptService" {
+    Script "DayCycle" @src="Scripts/ServerScriptService/DayCycle.lua"
+}

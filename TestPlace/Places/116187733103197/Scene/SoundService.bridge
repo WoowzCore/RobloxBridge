@@ -1,0 +1,1 @@
+SoundService "SoundService" AcousticSimulationEnabled=false AmbientReverb=NoReverb CharacterSoundsUseNewApi=Default DefaultListenerLocation=Camera DiffractionEnabled DistanceFactor=3.33 DopplerScale=1 ListenerCFrame=0,0,0 ListenerType=Camera OcclusionEnabled RespectFilteringEnabled ReverbEnabled RolloffScale=1

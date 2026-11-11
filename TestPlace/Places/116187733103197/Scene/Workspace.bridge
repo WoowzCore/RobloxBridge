@@ -1,0 +1,18 @@
+Workspace "Workspace" AirDensity=0.001 AirTurbulenceIntensity=0 AllowThirdPartySales=false AuthorityMode=Automatic ClientAnimatorThrottling=Default DistributedGameTime=0 FallHeightEnabled FallenPartsDestroyHeight=-500 GlobalWind=0,0,0 Gravity=196.2 LevelOfDetail=Automatic LuauTypeCheckMode=Default ModelStreamingMode=Default NextGenerationPhysicsSolver=Default PredictiveStreamingMode=Default ReplicationFrequency=Automatic ReplicationThroughput=Automatic Retargeting=Default StreamOutBehavior=Opportunistic StreamingAdaptiveRadius=false StreamingEnabled StreamingIntegrityMode=PauseOutsideLoadedArea StreamingMinRadius=64 StreamingTargetRadius=1024 {
+    Part "Baseplate" Anchored BottomSurface=Smooth CFrame=0,-8,0 Locked TopSurface=Smooth {
+        Texture "Texture" Color3=#000000 Face=Top StudsPerTileU=8 StudsPerTileV=8 TextureContent="rbxassetid://6372755229" Transparency=0.8
+    }
+    Model "Classic House" {
+        Model "House" {
+            Model "FirstFloor" @file="Scene/Workspace/Classic House/House/FirstFloor.bridge"
+            Model "Roof" @file="Scene/Workspace/Classic House/House/Roof.bridge"
+            Part "Smooth Block Model" Anchored CFrame=42.638,0.6,168.894|-180,0,-180 {
+                Snap "Snap" C0=0,0.6,0|-90,0,-180 C1=-11,-1.2,-30|-90,0,0
+            }
+        }
+    }
+    SpawnLocation "SpawnLocation" Anchored BottomSurface=Smooth CFrame=0,0.5,0 Duration=0 TopSurface=Smooth {
+        Decal "Decal" Face=Top TextureContent="rbxasset://textures/SpawnLocation.png"
+    }
+    Terrain "Terrain" Anchored AudioCanCollide BackSurface=Smooth BottomSurface=Inlet CFrame=0,0,0 CanCollide CanQuery CanTouch CastShadow CollisionGroup="Default" Decoration EnableFluidForces FrontSurface=Smooth GrassLength=0.7 LeftSurface=Smooth Locked Massless=false Material=Plastic PivotOffset=0,0,0 Reflectance=0 RightSurface=Smooth RootPriority=0 TopSurface=Studs Transparency=0 WaterColor=#0C545C WaterReflectance=1 WaterTransparency=0.3 WaterWaveSize=0.15 WaterWaveSpeed=10
+}

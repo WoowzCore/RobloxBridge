@@ -1,0 +1,30 @@
+# Карта сцены (создаётся приложением, не править)
+# Класс "Имя"  [файл]  (+N — скрытых объектов внутри)
+
+Lighting "Lighting"  [Scene/Lighting.bridge]
+  Atmosphere "Atmosphere"
+  BloomEffect "Bloom"
+  DepthOfFieldEffect "DepthOfField"
+  Sky "Sky"
+  SunRaysEffect "SunRays"
+MaterialService "MaterialService"  [Scene/MaterialService.bridge]
+ReplicatedFirst "ReplicatedFirst"  [Scene/ReplicatedFirst.bridge]
+ReplicatedStorage "ReplicatedStorage"  [Scene/ReplicatedStorage.bridge]
+ServerScriptService "ServerScriptService"  [Scene/ServerScriptService.bridge]
+  Script "DayCycle"
+ServerStorage "ServerStorage"  [Scene/ServerStorage.bridge]
+SoundService "SoundService"  [Scene/SoundService.bridge]
+StarterGui "StarterGui"  [Scene/StarterGui.bridge]
+StarterPack "StarterPack"  [Scene/StarterPack.bridge]
+StarterPlayer "StarterPlayer"  [Scene/StarterPlayer.bridge]
+  StarterCharacterScripts "StarterCharacterScripts"
+  StarterPlayerScripts "StarterPlayerScripts"
+Teams "Teams"  [Scene/Teams.bridge]
+Workspace "Workspace"  [Scene/Workspace.bridge]
+  Part "Baseplate"
+    Texture "Texture"
+  Model "Classic House"
+    Model "House"  (+1598)
+  SpawnLocation "SpawnLocation"
+    Decal "Decal"
+  Terrain "Terrain"
