@@ -337,7 +337,7 @@ public static class Bootstrap{
     }
 
     private static string __Err(string Message) => JsonSerializer.Serialize(new{ error = Message });
-
+    
     private static PlaceInfo? __ReadInfo(HttpListenerRequest Request){
         using StreamReader Reader = new(Request.InputStream, Encoding.UTF8);
         return JsonSerializer.Deserialize<PlaceInfo>(Reader.ReadToEnd(), __JsonIn);
@@ -429,6 +429,114 @@ private static (int Code, string Body) __Route(HttpListenerRequest Request){
 
         default:
             return (404, __Err("Not Found"));
+    }
+}
+
+public static class Pull{
+    private static readonly JsonSerializerOptions __Json = new(){ WriteIndented = true, IncludeFields = true };
+
+    // Принимает тело POST /pull, пишет файлы, возвращает итоговое сообщение. Ошибки - InvalidOperationException.
+    public static string Run(string PlaceDir, PlaceData Place, string BodyJson){
+        using JsonDocument Doc = JsonDocument.Parse(BodyJson);
+        JsonElement Root = Doc.RootElement;
+        if(!Root.TryGetProperty("services", out JsonElement Svc) || Svc.ValueKind != JsonValueKind.Object){
+            throw new InvalidOperationException("В запросе нет services");
+        }
+
+        int Count = 0;
+        List<BridgeNode> Fresh = [];
+        foreach(JsonProperty P in Svc.EnumerateObject()){
+            if(!Place.Services.Contains(P.Name)){ continue; }
+            Fresh.Add(__Node(P.Value, ref Count));
+        }
+        if(Fresh.Count == 0){ throw new InvalidOperationException("Присланные сервисы не входят в Services (place.json)"); }
+
+        // Сервисы, которых нет в запросе, берём с диска как есть - иначе WriteScene их сотрёт.
+        List<string> Prob = [];
+        List<BridgeNode> Old = Bridge.ReadScene(PlaceDir, Prob);
+        if(Prob.Count > 0){
+            throw new InvalidOperationException("Файлы сцены не читаются, Pull остановлен: " + string.Join("; ", Prob.Take(5)));
+        }
+
+        List<BridgeNode> All = [..Old.Where(O => !Fresh.Any(F => F.Name == O.Name)), ..Fresh];
+        List<BridgeNode> Result = [..Bridge.Filter(All, Place.Services, Place.Ignore)];
+
+        List<string> Warn = [];
+        Bridge.WriteScene(PlaceDir, Result, Place.Splits, 150, Warn);
+        Bridge.WriteMeta(PlaceDir, Result, Place.Splits);
+        __SavePlace(PlaceDir, Place);
+
+        string Names = string.Join(", ", Fresh.Select(F => F.Name));
+        string Text = $"Pull: {Names}, объектов {Count}";
+        if(Root.TryGetProperty("skipped", out JsonElement Sk) && Sk.ValueKind == JsonValueKind.Object){
+            string List = string.Join(", ", Sk.EnumerateObject().Select(S => $"{S.Name}×{S.Value}"));
+            if(List.Length > 0){ Text += ". Не сохранено по типам: " + List; }
+        }
+        if(Warn.Count > 0){ Text += ". Замечаний: " + Warn.Count; }
+        return Text;
+    }
+
+    // Если у тебя уже есть метод записи place.json - вызови его вместо этого.
+    private static void __SavePlace(string PlaceDir, PlaceData Place){
+        string Target = Path.Combine(PlaceDir, "place.json");
+        string Text = JsonSerializer.Serialize(Place, __Json);
+        if(!File.Exists(Target) || File.ReadAllText(Target) != Text){ File.WriteAllText(Target, Text); }
+    }
+
+    private static BridgeNode __Node(JsonElement E, ref int Count){
+        Count++;
+        BridgeNode Node = new(){ Class = __Str(E, "c"), Name = __Str(E, "n") };
+        Node.Props = __Props(E, "p");
+        Node.Attrs = __Props(E, "a");
+
+        List<string> Tags = [];
+        if(E.TryGetProperty("g", out JsonElement G) && G.ValueKind == JsonValueKind.Array){
+            foreach(JsonElement T in G.EnumerateArray()){ Tags.Add(T.GetString() ?? ""); }
+        }
+        Tags.Sort(StringComparer.Ordinal);
+        Node.Tags = Tags;
+
+        List<BridgeNode> Kids = [];
+        if(E.TryGetProperty("k", out JsonElement K) && K.ValueKind == JsonValueKind.Array){
+            foreach(JsonElement C in K.EnumerateArray()){ Kids.Add(__Node(C, ref Count)); }
+        }
+        Node.Children = Kids;
+        return Node;
+    }
+
+    private static string __Str(JsonElement E, string Key){
+        return E.TryGetProperty(Key, out JsonElement V) ? V.GetString() ?? "" : "";
+    }
+
+    // Пустой Lua-словарь приходит как [], поэтому проверяем, что это объект.
+    private static List<BridgeProp> __Props(JsonElement E, string Key){
+        List<BridgeProp> List = [];
+        if(!E.TryGetProperty(Key, out JsonElement O) || O.ValueKind != JsonValueKind.Object){ return List; }
+        foreach(JsonProperty P in O.EnumerateObject()){
+            if(__TryProp(P.Name, P.Value, out BridgeProp Prop)){ List.Add(Prop); }
+        }
+        List.Sort((A, B) => string.CompareOrdinal(A.Key, B.Key));
+        return List;
+    }
+
+    private static string __Join(JsonElement X){
+        return string.Join(",", X.EnumerateArray().Select(N => Bridge.Num(N.GetDouble())));
+    }
+
+    private static bool __TryProp(string Key, JsonElement V, out BridgeProp Prop){
+        Prop = default!;
+        if(V.ValueKind != JsonValueKind.Object || !V.TryGetProperty("t", out JsonElement T) || !V.TryGetProperty("v", out JsonElement X)){ return false; }
+        switch(T.GetString()){
+            case "b": Prop = new(Key, X.GetBoolean() ? "true" : "false"); return true;
+            case "n": Prop = new(Key, Bridge.Num(X.GetDouble())); return true;
+            case "s": Prop = new(Key, X.GetString() ?? "", BridgeKind.Str); return true;
+            case "e": Prop = new(Key, X.GetString() ?? ""); return true;
+            case "v2": case "v3": case "u": case "u2": case "nr": case "rc":
+                Prop = new(Key, __Join(X)); return true;
+            case "c3":
+                Prop = new(Key, $"#{X[0].GetInt32():X2}{X[1].GetInt32():X2}{X[2].GetInt32():X2}"); return true;
+        }
+        return false;
     }
 }
 
@@ -545,6 +653,12 @@ public sealed class ProjectData{
 public sealed class PlaceData{
     public long   PlaceId { get; set; }
     public string Created { get; set; } = "";
+
+    public List<string> Services { get; set; } = [..Bridge.DefaultServices];
+    public List<string> Ignore   { get; set; } = [..Bridge.DefaultIgnore];
+
+    /// Путь объекта -> файл .bridge (относительно папки плейса). Заполняется и вручную, и автоматически.
+    public Dictionary<string, string> Splits { get; set; } = [];
 }
 
 public sealed record ProjectHandle(string Dir, ProjectData Data);
