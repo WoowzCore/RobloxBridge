@@ -830,6 +830,39 @@ public static class Splitter{
         return new SyncReply{ Text = Text, Lines = [], Body = new{ status = "ok", text = Text, lines = Lines, warn = Again } };
     }
 
+    // Убирает запись из Splits (фантомную или ненужную). Объект в сцене не трогает.
+    public static SyncReply Forget(string PlaceDir, PlaceData Place, string At){
+        if(!Place.Splits.TryGetValue(At, out string? Rel)){ throw new InvalidOperationException($"«{At}» нет в списке вынесенных"); }
+
+        string Root   = System.IO.Path.GetFullPath(PlaceDir);
+        string Full   = System.IO.Path.GetFullPath(System.IO.Path.Combine(PlaceDir, Rel));
+        bool   Exists = File.Exists(Full);
+
+        bool Known   = false;   // удалось ли прочитать сцену без проблем
+        bool InScene = false;
+        try{
+            List<string> Prob = [];
+            List<BridgeNode> Scene = [..Bridge.Filter(Bridge.ReadScene(PlaceDir, Prob), Place.Services, Place.Ignore)];
+            Known   = Prob.Count == 0;
+            InScene = At.Contains('/') && __Has(Scene, At.Split('/'), 0);
+        }catch{}
+
+        if(InScene && Exists){
+            throw new InvalidOperationException($"«{At}» сейчас лежит в {Rel} и есть в сцене. Нажми «Вернуть», а не ✕.");
+        }
+
+        Place.Splits.Remove(At);
+
+        string Text = $"Убрано из вынесенных: {At}";
+        if(Exists){
+            if(Known && Full.StartsWith(Root)){ File.Delete(Full); Text += $" (файл {Rel} удалён)"; }
+            else{ Text += $" (файл {Rel} оставлен: сцену не удалось проверить)"; }
+        }
+
+        File.WriteAllText(System.IO.Path.Combine(PlaceDir, "place.json"), JsonSerializer.Serialize(Place, Pull.Json));
+        return new SyncReply{ Text = Text };
+    }
+    
     // Те же правила путей, что в Diff: сортировка (имя, класс), одинаковые братья ~2, ~3
     private static bool __Has(IEnumerable<BridgeNode> Level, string[] Parts, int I){
         string? Prev = null;
@@ -856,7 +889,7 @@ public static class Sync{
 
     // Возвращает true, если путь обработан здесь
     public static bool TryHandle(string Route, HttpListenerRequest Req, HttpListenerResponse Res){
-        if(Route != "/config" && Route != "/pull" && Route != "/push" && Route != "/note" && Route != "/split" && Route != "/unsplit" && Route != "/settings" && Route != "/report"){ return false; }
+        if(Route != "/config" && Route != "/pull" && Route != "/push" && Route != "/note" && Route != "/split" && Route != "/split/forget" && Route != "/unsplit" && Route != "/settings" && Route != "/report"){ return false; }
         __Dbg = false;
         try{
             if(Dump.Blocking){ Reply(Res, 409, new{ error = "Нет файла Full-API-Dump: работа заблокирована" }); return true; }
@@ -898,6 +931,16 @@ public static class Sync{
                         Log?.Invoke(Text, "Info");
                     }
                     Reply(Res, 200, __SettingsView(PlaceDir, Place, Text));
+                }
+                return true;
+            }
+            
+            if(Route == "/split/forget"){
+                lock(__Lock){
+                    string Target = (string?)JsonNode.Parse(Body)?["path"] ?? "";
+                    SyncReply R = Splitter.Forget(PlaceDir, Place, Target);
+                    Log?.Invoke(R.Text, "Info");
+                    Reply(Res, 200, __SettingsView(PlaceDir, Place, R.Text));
                 }
                 return true;
             }

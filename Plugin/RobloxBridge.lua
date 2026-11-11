@@ -987,8 +987,8 @@ do
 
 	local BtnRow = make("Frame", { LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 34), BackgroundTransparency = 1 }, SyncCard)
 	List(BtnRow, 6, Enum.FillDirection.Horizontal)
-	local PullBtn = Button(BtnRow, 1, "⬇ Pull", "normal", UDim2.new(0.5, -3, 1, 0))
-	local PushBtn = Button(BtnRow, 2, "⬆ Push", "primary", UDim2.new(0.5, -3, 1, 0))
+	local PullBtn = Button(BtnRow, 1, "⬆ Pull", "normal", UDim2.new(0.5, -3, 1, 0))
+	local PushBtn = Button(BtnRow, 2, "⬇ Push", "primary", UDim2.new(0.5, -3, 1, 0))
 	Text(SyncCard, 3, "Pull: Studio → файлы · Push: файлы → Studio", { Color = C.Dim, Size = 12 })
 
 	local AutoBtn = Button(SyncCard, 4, "", "link")
@@ -1044,7 +1044,7 @@ do
 	end
 
 	-- ===== Карточка «Изменения» =====
-	local ChangesCard = Card(Root, 3)
+	local ChangesCard = Card(Root, 4)
 	ChangesCard.Visible = false
 	local ChangesHead = Text(ChangesCard, 1, "", { Rich = true, Bold = true, Size = 15 })
 	local ListFrame = make("Frame", { LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY, BorderSizePixel = 0,
@@ -1135,7 +1135,7 @@ do
 				.. ". Нажмите «Применить».", Yellow)
 		end
 		ShowLines(Lines)
-		return Total > 0
+		return Total > 0, Cn.deleted
 	end
 
 	local function DoApply()
@@ -1197,10 +1197,17 @@ do
 	end
 
 	Click(PullBtn, function() Run("Pull", DoPull) end)
+	local DeleteGuard = 10
 	Click(PushBtn, function()
 		Run(AutoApply and "Push" or "Push: предпросмотр", function()
-			local Has = DoPreview()
-			if Has and AutoApply then DoApply() end
+			local Has, Del = DoPreview()
+			if Has and AutoApply then
+				if Del > DeleteGuard then
+					SetInfo("Удалится объектов: " .. Del .. " — это много. Проверьте список и нажмите «Применить».", Orange)
+				else
+					DoApply()
+				end
+			end
 		end)
 	end)
 	Click(ApplyBtn, function()
@@ -1209,7 +1216,7 @@ do
 	end)
 	Click(UndoBtn, function() Run("Отмена", DoUndo) end)
 
-	-- ===== Вынос объектов в отдельные файлы =====
+	-- ===== Объект: информация о выделенном и действия =====
 	-- Путь объекта по тем же правилам, что на сервере (~2 у одинаковых братьев, %2F)
 	local function PathOf(Inst)
 		if Inst.Parent == game then return Inst.Name end
@@ -1222,39 +1229,199 @@ do
 		return nil
 	end
 
-	local function SplitAction(On)
-		local Cfg = Prepare()
-		local Sel = Selection:Get()
-		if #Sel ~= 1 then error("Выберите в Explorer один объект", 0) end
-		local Path = PathOf(Sel[1])
-		if not Path then error("Не удалось определить путь выбранного объекта", 0) end
-		local RootName, Found = string.match(Path, "^[^/]+"), false
-		for _, S in ipairs(Cfg.services or {}) do
-			if S == RootName then Found = true end
+	-- Кэш настроек плейса (сервисы, игнор, вынесенное); обновляется раз в 8 с или принудительно
+	local Cache = { Data = nil, Time = -100 }
+	local function Refresh(Force)
+		if not Force and Cache.Data and os.clock() - Cache.Time < 8 then return true end
+		local D, E = Call("/settings" .. Q(), nil, true)
+		if E or not D then return false end
+		Cache.Data, Cache.Time = D, os.clock()
+		return true
+	end
+
+	local function Under(Path, Rule)
+		return Path == Rule or string.sub(Path, 1, #Rule + 1) == Rule .. "/"
+	end
+
+	local Current, SelToken = nil, 0
+	local ShowObject
+
+	local ObjCard = Card(Root, 3)
+	ObjCard.Visible = false
+	Text(ObjCard, 1, "Объект", { Bold = true, Size = 15 })
+	local ObjTitle = Text(ObjCard, 2, "", { Bold = true })
+	local ObjPath = Text(ObjCard, 3, "", { Code = true, Size = 12, Color = C.Dim })
+	local ObjStatus = Text(ObjCard, 4, "", { Size = 13 })
+	local ObjExtra = Text(ObjCard, 5, "", { Size = 12, Color = C.Dim })
+	local ObjRow = make("Frame", { LayoutOrder = 6, Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1 }, ObjCard)
+	List(ObjRow, 6, Enum.FillDirection.Horizontal)
+	local SplitBtn = Button(ObjRow, 1, "Вынести в файл", "normal", UDim2.new(0.5, -3, 1, 0))
+	local UnsplitBtn = Button(ObjRow, 2, "Вернуть в общий", "normal", UDim2.new(0.5, -3, 1, 0))
+	local IgnoreBtn = Button(ObjCard, 7, "Не синхронизировать", "normal")
+	local ObjHint = Text(ObjCard, 8, "", { Size = 12, Color = C.Dim })
+
+	local function Analyze(Sel)
+		local A = { Can = {}, Color = Dim(), Extra = "", Hint = "" }
+		if #Sel == 0 then A.Title, A.Status = "Ничего не выделено", "Выделите объект в Explorer"; return A end
+		if #Sel > 1 then A.Title, A.Status = "Выделено объектов: " .. #Sel, "Выберите один объект"; return A end
+		local Inst = Sel[1]
+		A.Title = Inst.ClassName .. " · «" .. Inst.Name .. "»"
+		local Path = PathOf(Inst)
+		if not Path then
+			A.Status = "Не синхронизируется: вне сервисов или внутри Union/Negate"
+			return A
 		end
-		if not Found then error("Сервис " .. RootName .. " не входит в Services", 0) end
-		local D, E = Call((On and "/split" or "/unsplit") .. Q(), { path = Path })
+		A.Path = Path
+		local Data = Cache.Data
+		if not Data then A.Status = "Нет данных от приложения…"; return A end
+
+		local Extra = {}
+		local Ok, N = pcall(function() return #Inst:GetDescendants() end)
+		if Ok and N > 0 then table.insert(Extra, "Вложенных объектов: " .. N) end
+		if Inst:IsA("LuaSourceContainer") then
+			local Ok2, S = pcall(GetProp, Inst, "Source")
+			if Ok2 then
+				local _, Nl = string.gsub(S, "\n", "")
+				table.insert(Extra, "Скрипт: " .. (Nl + 1) .. " строк")
+			end
+		end
+		A.Extra = table.concat(Extra, " · ")
+
+		local RootName, InServices = string.match(Path, "^[^/]+"), false
+		for _, S in ipairs(Data.services or {}) do
+			if S == RootName then InServices = true end
+		end
+		if not InServices then
+			A.Status, A.Color = "Сервис «" .. RootName .. "» не входит в синхронизацию", Yellow
+			A.Hint = "Добавьте сервис в «Настройки плейса»."
+			return A
+		end
+
+		for _, Rule in ipairs(Data.ignore or {}) do
+			if Path == Rule then
+				A.Status, A.Ignored = "Игнорируется (есть в списке «Игнорировать»)", true
+				A.Can.ignore = true
+				return A
+			elseif Under(Path, Rule) then
+				A.Status = "Игнорируется вместе с «" .. Rule .. "»"
+				A.Hint = "Правило стоит на родителе: снимите его там или в настройках."
+				return A
+			end
+		end
+
+		if Inst.Parent == game then
+			A.Status, A.Color = "Сервис синхронизируется", Green
+			A.Hint = "Сервис целиком убирается в «Настройки плейса»."
+			return A
+		end
+		if Inst.ClassName == "Terrain" then
+			A.Status, A.Color = "Terrain: сохраняются только свойства", Green
+			return A
+		end
+
+		for _, S in ipairs(Data.splits or {}) do
+			if S.path == Path then
+				if S.exists then
+					A.Status, A.Color = "Вынесен в отдельный файл (" .. tostring(S.lines) .. " стр.)", Blue
+				else
+					A.Status, A.Color = "Вынесен, но файла нет!", Red
+					A.Hint = "Нажмите «Вернуть в общий» или уберите запись кнопкой ✕ в настройках плейса."
+				end
+				A.Can.unsplit = true
+				return A
+			end
+		end
+
+		local Inside
+		for _, S in ipairs(Data.splits or {}) do
+			if Under(Path, S.path) then Inside = S.path end
+		end
+		A.Status = Inside and ("Синхронизируется, внутри вынесенного «" .. Inside .. "»") or "Синхронизируется"
+		A.Color = Green
+		A.Can.split, A.Can.ignore = true, true
+		return A
+	end
+
+	local function ApplyObj()
+		local A = Current or { Can = {} }
+		Enable(SplitBtn, not Working and A.Can.split == true)
+		Enable(UnsplitBtn, not Working and A.Can.unsplit == true)
+		Enable(IgnoreBtn, not Working and A.Can.ignore == true)
+		IgnoreBtn.Text = A.Ignored and "Синхронизировать снова" or "Не синхронизировать"
+	end
+	ApplyObj()
+
+	-- кнопки объекта обновляются вместе с остальными (Working меняется в Run/Do)
+	local BaseRefresh = RefreshButtons
+	RefreshButtons = function()
+		BaseRefresh()
+		ApplyObj()
+	end
+
+	ShowObject = function(Force)
+		SelToken += 1
+		local My = SelToken
+		task.delay(Force and 0 or 0.25, function()
+			if My ~= SelToken then return end
+			if #Selection:Get() == 1 then Refresh(Force) end
+			if My ~= SelToken then return end
+			local A = Analyze(Selection:Get())
+			Current = A
+			ObjTitle.Text = A.Title or ""
+			ObjPath.Text = A.Path or ""
+			ObjPath.Visible = A.Path ~= nil
+			ObjStatus.Text = A.Status or ""
+			ObjStatus.TextColor3 = A.Color
+			ObjExtra.Text = A.Extra
+			ObjExtra.Visible = A.Extra ~= ""
+			ObjHint.Text = A.Hint
+			ObjHint.Visible = A.Hint ~= ""
+			ApplyObj()
+		end)
+	end
+	Selection.SelectionChanged:Connect(function() ShowObject(false) end)
+
+	local function SplitAction(On)
+		local A = Current
+		if not A or not A.Path then error("Выберите в Explorer один объект", 0) end
+		Prepare()
+		local D, E = Call((On and "/split" or "/unsplit") .. Q(), { path = A.Path })
 		if E then error(E, 0) end
 		SetPending(nil)
 		SetInfo(D.text or "Готово", D.warn and Yellow or Green)
 		ShowLines(D.lines or {})
+		ShowObject(true)
 	end
 
-	-- ===== Карточка «Инструменты» =====
-	local ToolsCard = Card(Root, 4)
-	ToolsCard.Visible = false
-	Text(ToolsCard, 1, "Инструменты", { Bold = true, Size = 15 })
-	local SplitRow = make("Frame", { LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1 }, ToolsCard)
-	List(SplitRow, 6, Enum.FillDirection.Horizontal)
-	local SplitBtn = Button(SplitRow, 1, "Вынести в файл", "normal", UDim2.new(0.5, -3, 1, 0))
-	local UnsplitBtn = Button(SplitRow, 2, "Вернуть в общий", "normal", UDim2.new(0.5, -3, 1, 0))
-	local SplitHint = Text(ToolsCard, 3, "Работает с объектом, выделенным в Explorer.", { Color = C.Dim, Size = 12 })
-	local SetBtn = Button(ToolsCard, 4, "⚙ Настройки плейса…", "link")
-	local DebugBtn = Button(ToolsCard, 5, "", "link")
-	DebugBtn.TextSize = 13
+	local function IgnoreAction()
+		local A = Current
+		if not A or not A.Path then error("Выберите в Explorer один объект", 0) end
+		if not Refresh(true) then error("Нет данных от приложения", 0) end
+		local Data = Cache.Data
+		local New, Has = {}, false
+		for _, P in ipairs(Data.ignore or {}) do
+			if P == A.Path then Has = true else table.insert(New, P) end
+		end
+		if not Has then table.insert(New, A.Path) end
+		local D, E = Call("/settings" .. Q(), { autoSplit = Data.autoSplit, services = Data.services, ignore = New })
+		if E then error(E, 0) end
+		SetPending(nil)
+		SetInfo((Has and "Объект снова синхронизируется: " or "Объект исключён из синхронизации: ") .. A.Path
+			.. ". Чтобы изменения попали в файлы, сделайте Pull.", Green)
+		ShowObject(true)
+	end
 
 	Click(SplitBtn, function() Run("Вынос", function() SplitAction(true) end) end)
 	Click(UnsplitBtn, function() Run("Возврат", function() SplitAction(false) end) end)
+	Click(IgnoreBtn, function() Run("Правило", IgnoreAction) end)
+
+	-- ===== Карточка «Инструменты» =====
+	local ToolsCard = Card(Root, 5)
+	ToolsCard.Visible = false
+	Text(ToolsCard, 1, "Инструменты", { Bold = true, Size = 15 })
+	local SetBtn = Button(ToolsCard, 2, "⚙ Настройки плейса…", "link")
+	local DebugBtn = Button(ToolsCard, 3, "", "link")
+	DebugBtn.TextSize = 13
 
 	local function RefreshDebug()
 		DebugBtn.Text = "Отладка запросов: " .. (DebugOn and "вкл (Output плагина + лог приложения)" or "выкл")
@@ -1266,13 +1433,17 @@ do
 	end)
 	RefreshDebug()
 
+	local WasReady = false
 	task.spawn(function()
 		while true do
 			local Show = State.Found and State.Place == "ready"
 			SyncCard.Visible = Show
 			ChangesCard.Visible = Show and HasLines
+			ObjCard.Visible = Show
+			SetBtn.Visible = Show
 			ToolsCard.Visible = State.Found
-			SplitRow.Visible, SplitHint.Visible, SetBtn.Visible = Show, Show, Show
+			if Show and not WasReady then ShowObject(true) end
+			WasReady = Show
 			task.wait(0.5)
 		end
 	end)
@@ -1312,7 +1483,7 @@ do
 
 	local SplCard = Card(SRoot, 7)
 	Text(SplCard, 1, "Вынесено в отдельные файлы", { Bold = true, Size = 15 })
-	Text(SplCard, 2, "Клик по пути — выделить объект в Explorer.", { Color = C.Dim, Size = 13 })
+	Text(SplCard, 2, "Клик по пути — выделить в Explorer. «Вернуть» — вернуть в общий файл. ✕ — убрать только запись (для «фантомов»), объекты и файлы не трогаются.", { Color = C.Dim, Size = 13 })
 	local SplitsFrame = make("Frame", { LayoutOrder = 3, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY,
 		BackgroundTransparency = 1 }, SplCard)
 	List(SplitsFrame, 2)
@@ -1372,23 +1543,34 @@ do
 			local RowF = make("Frame", { LayoutOrder = I, Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1 }, SplitsFrame)
 			List(RowF, 4, Enum.FillDirection.Horizontal)
 			local Name = Button(RowF, 1, S.path .. (S.exists and ("  (" .. S.lines .. " стр.)") or "  (файла нет!)"),
-				"link", UDim2.new(1, -78, 1, 0))
+				"link", UDim2.new(1, -112, 1, 0))
 			Name.Font = Enum.Font.Code
 			Name.TextSize = 12
 			Name.TextWrapped = false
 			Name.TextTruncate = Enum.TextTruncate.AtEnd
 			Name.TextColor3 = S.exists and C.Text() or Red
 			local Back = Button(RowF, 2, "Вернуть", "normal", UDim2.new(0, 74, 1, 0))
-			Name.MouseButton1Click:Connect(function()
+			local Del = Button(RowF, 3, "✕", "normal", UDim2.new(0, 30, 1, 0))
+			Click(Name, function()
 				local Inst = Find(S.path)
 				if Inst then Selection:Set({ Inst }) else SStatus("Объект не найден в Studio: " .. S.path, Yellow) end
 			end)
-			Back.MouseButton1Click:Connect(function()
+			Click(Back, function()
 				Do(function()
 					local Rs, E = Call("/unsplit" .. Q(), { path = S.path })
 					if E then error(E, 0) end
 					SStatus(Rs.text or "Готово", Rs.warn and Yellow or Green)
 					Load()
+					ShowObject(true)
+				end)
+			end)
+			Click(Del, function()
+				Do(function()
+					local Rs, E = Call("/split/forget" .. Q(), { path = S.path })
+					if E then error(E, 0) end
+					SStatus(Rs.text or "Запись убрана", Green)
+					Load()
+					ShowObject(true)
 				end)
 			end)
 		end
@@ -1422,6 +1604,7 @@ do
 		local D, E = Call("/settings" .. Q(), { autoSplit = N, services = Svc, ignore = SplitLines(IgnBox.Text) })
 		if E then error(E, 0) end
 		SStatus((D.text or "Готово") .. ". Чтобы изменения попали в файлы, сделайте Pull.", Green)
+		ShowObject(true)
 		Fill(D)
 	end
 
