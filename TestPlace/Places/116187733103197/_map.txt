@@ -11,7 +11,6 @@ MaterialService "MaterialService"  [Scene/MaterialService.bridge]
 ReplicatedFirst "ReplicatedFirst"  [Scene/ReplicatedFirst.bridge]
 ReplicatedStorage "ReplicatedStorage"  [Scene/ReplicatedStorage.bridge]
 ServerScriptService "ServerScriptService"  [Scene/ServerScriptService.bridge]
-  Script "DayCycle"
 ServerStorage "ServerStorage"  [Scene/ServerStorage.bridge]
 SoundService "SoundService"  [Scene/SoundService.bridge]
 StarterGui "StarterGui"  [Scene/StarterGui.bridge]
@@ -22,37 +21,17 @@ StarterPlayer "StarterPlayer"  [Scene/StarterPlayer.bridge]
 Teams "Teams"  [Scene/Teams.bridge]
 Workspace "Workspace"  [Scene/Workspace.bridge]
   Part "Baseplate"
-    Texture "Texture"
-  Model "Campsite"
-    Model "Campfire"  (+13)
-    Model "Lantern"  (+4)
-    Part "Log Seat"
-    Model "Mushroom 1"  (+4)
-    Model "Mushroom 2"  (+4)
-    Model "Robot"  (+19)
-    Model "Sign"  (+5)
-  Model "Magic Crystal"
-    Part "Base Ring"
-    Part "Core"  (+2)
-    Part "Crystal Tip"
-    Script "CrystalController"
-    Sound "Hum"
-    Part "Pedestal"
-    Part "ProximityTrigger"  (+1)
-    Model "Shards"  (+3)
+  Folder "ClassTest"
+    Folder "Adornees"  (+10)
+    Folder "Attrs"  (+3)
+    Folder "Constraints"  (+12)
+    Folder "Curves"  (+16)
+    Folder "Effects"  (+10)
+    Folder "Gui"  (+12)
+    Folder "Joints"  (+7)
+    Folder "Misc"  (+11)
+    Folder "PartTypes"  (+12)
+    Folder "Values"  (+14)
   SpawnLocation "SpawnLocation"
     Decal "Decal"
   Terrain "Terrain"
-  Model "Test Lobby"
-    Folder "Config Values"  (+6)
-    Model "Edge Cases"  (+5)
-    Script "InlineBlock"
-    Script "InlineOne"
-    Model "Light Station"  [Scene/Workspace/Test Lobby/Light Station.bridge]  (+16)
-    Model "Materials Station"  [Scene/Workspace/Test Lobby/Materials Station.bridge]  (+14)
-    Part "Plaza"
-    Part "Plaza Ring"
-    Model "Rubber Duck"  [Scene/Workspace/Test Lobby/Rubber Duck.bridge]  (+15)
-    Model "Shapes Station"  [Scene/Workspace/Test Lobby/Shapes Station.bridge]  (+11)
-    Model "Spiral Stairs"  [Scene/Workspace/Test Lobby/Spiral Stairs.bridge]  (+17)
-    Model "Welcome Sign"  [Scene/Workspace/Test Lobby/Welcome Sign.bridge]  (+5)

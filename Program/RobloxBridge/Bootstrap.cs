@@ -493,7 +493,7 @@ public static class Diff{
     private static string __Esc(string Name){ return Name.Replace("%", "%25").Replace("/", "%2F"); }
 
     // Сегменты путей: одинаковые братья после сортировки (имя, класс) получают ~2, ~3...
-    private static List<(string Key, BridgeNode Node)> __Keyed(IEnumerable<BridgeNode> Nodes){
+    internal static List<(string Key, BridgeNode Node)> __Keyed(IEnumerable<BridgeNode> Nodes){
         List<(string Key, BridgeNode Node)> Res = [];
         string? Prev = null;
         int Dup = 0;
@@ -662,6 +662,10 @@ public static class Pull{
         if(Prob.Count > 0){ throw new InvalidOperationException("Префабы не читаются, Pull остановлен: " + string.Join("; ", Prob.Take(5))); }
 
         List<BridgeNode> OldView = [..Bridge.Filter(OldFull, Place.Services, Place.Ignore)];
+        // ссылки: и в Studio, и на диске приводим к одному виду (*id или путь)
+        List<string> IdWarn = [], Lost = [];
+        Refs.Canon(Fresh, Refs.Build(Fresh, IdWarn), Lost, true);
+        Refs.Canon(OldView, Refs.Build(OldView, []), [], false);
         List<DiffOp> Ops = Diff.Compute(OldView.Where(O => Names.Contains(O.Name)), Fresh);
 
         // объекты с _prefab превращаются обратно в одну строку (после того, как diff посчитан)
@@ -688,6 +692,9 @@ public static class Pull{
 
         List<string> Lines = Diff.Render(Ops);
         Lines.AddRange(PrefabWarn.Select(W => W.StartsWith(" ") ? W : "! " + W));
+        Lines.AddRange(IdWarn.Select(W => "! " + W));
+        Lines.AddRange(Lost.Take(10).Select(W => "! ссылка не сохранена (цель вне сохраняемых объектов): " + W));
+        if(Lost.Count > 10){ Lines.Add($"! … ещё ссылок: {Lost.Count - 10}"); }
         return new SyncReply{ Text = Text, Lines = Lines, Body = new{ status = "ok", text = Text, lines = Lines } };
     }
 
@@ -746,8 +753,13 @@ public static class Pull{
             case "n": Prop = new(Key, Bridge.Num(X.GetDouble())); return true;
             case "s": case "ct": Prop = new(Key, X.GetString() ?? "", BridgeKind.Str); return true;
             case "e": Prop = new(Key, X.GetString() ?? ""); return true;
-            case "v2": case "v3": case "u": case "u2": case "nr": case "rc":
+            case "ref": Prop = new(Key, X.GetString() ?? "", BridgeKind.Ref); return true;
+            case "v2": case "v3": case "v3i": case "u": case "u2": case "nr": case "rc":
                 Prop = new(Key, __Join(X)); return true;
+            case "ns": case "cs": case "fc": case "ax": case "pp":
+                Prop = new(Key, X.GetString() ?? ""); return true;
+            case "ft": case "bc":
+                Prop = new(Key, X.GetString() ?? "", BridgeKind.Str); return true;
             case "c3":
                 Prop = new(Key, $"#{X[0].GetInt32():X2}{X[1].GetInt32():X2}{X[2].GetInt32():X2}"); return true;
             case "cf": {
@@ -773,6 +785,14 @@ public static class Push{
         List<BridgeNode> Disk = [..Bridge.Filter(Scene, Place.Services, Place.Ignore)];
         if(Prob.Count > 0){ throw new InvalidOperationException("Файлы сцены не читаются: " + string.Join("; ", Prob.Take(5))); }
         if(Disk.Count == 0){ throw new InvalidOperationException("В папке плейса нет файлов сцены. Сначала сделай Pull."); }
+        
+        // ссылки: проверка и единый вид
+        List<string> IdProb = [], Lost = [];
+        Refs.RefMap DiskMap = Refs.Build(Disk, IdProb);
+        Refs.Canon(Disk, DiskMap, Lost, false);
+        if(IdProb.Count > 0){ throw new InvalidOperationException("Ссылки: " + string.Join("; ", IdProb.Take(5))); }
+        if(Lost.Count > 0){ throw new InvalidOperationException("Ссылки не найдены: " + string.Join("; ", Lost.Take(5)) + (Lost.Count > 5 ? $" …и ещё {Lost.Count - 5}" : "")); }
+        Refs.Canon(Studio, Refs.Build(Studio, []), [], true);   // ссылки Studio на объекты вне сохраняемых не сравниваем
 
         // Трогаем только сервисы, для которых есть файл
         HashSet<string> Names = [..Disk.Select(D => D.Name)];
@@ -780,6 +800,7 @@ public static class Push{
         foreach(BridgeNode S in Studio.Where(S => !Names.Contains(S.Name))){ Lines.Add($"x {S.Name}: нет файла сцены, не трогаю"); }
 
         List<DiffOp> Ops = Diff.Compute(Studio.Where(S => Names.Contains(S.Name)), Disk);
+        Refs.ToPaths(Ops, DiskMap);
         List<object> Plain = Diff.Plain(Ops);
         string Token = Diff.Token(Plain);
         var C = Diff.Counts(Ops);
@@ -1405,6 +1426,78 @@ public static class Prefabs{
         string Full   = System.IO.Path.GetFullPath(System.IO.Path.Combine(Root, Rel));
         string Prefix = Root.TrimEnd(System.IO.Path.DirectorySeparatorChar) + System.IO.Path.DirectorySeparatorChar;
         return Full.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase) ? Full : null;
+    }
+}
+
+// Ссылки между объектами: Part0=@"Workspace/Door/Frame" (путь) или Part0=@"*frame1" (id из $_id="frame1")
+public static class Refs{
+    public const string IdAttr = "_id";
+
+    public sealed class RefMap{
+        public readonly Dictionary<string, BridgeNode> Path = [];   // путь → объект
+        public readonly Dictionary<BridgeNode, string> Of   = [];   // объект → путь
+        public readonly Dictionary<string, string>     Ids  = [];   // id → путь
+    }
+
+    public static RefMap Build(IEnumerable<BridgeNode> Tree, List<string> Problems){
+        RefMap X = new();
+        __Walk("", Tree, X, Problems);
+        return X;
+    }
+
+    private static void __Walk(string Parent, IEnumerable<BridgeNode> Level, RefMap X, List<string> Problems){
+        foreach(var K in Diff.__Keyed(Level)){
+            string At = Parent.Length == 0 ? K.Key : Parent + "/" + K.Key;
+            X.Path[At]     = K.Node;
+            X.Of[K.Node]   = At;
+
+            BridgeProp? Id = K.Node.Attrs.Find(A => A.Key == IdAttr);
+            if(Id != null){
+                if(X.Ids.TryGetValue(Id.Value, out string? Have)){ Problems.Add($"id «{Id.Value}» повторяется: {Have} и {At}"); }
+                else{ X.Ids[Id.Value] = At; }
+            }
+
+            __Walk(At, K.Node.Children, X, Problems);
+        }
+    }
+
+    public static string? Target(RefMap X, string Value){
+        if(Value.StartsWith('*')){ return X.Ids.TryGetValue(Value[1..], out string? At) ? At : null; }
+        return X.Path.ContainsKey(Value) ? Value : null;
+    }
+
+    // Единый вид: *id, если у цели есть $_id, иначе путь. Ненайденные цели → Missing (и удаляются, если Drop).
+    public static void Canon(IEnumerable<BridgeNode> Tree, RefMap X, List<string> Missing, bool Drop){
+        foreach(BridgeNode N in Tree){ __Canon(N, X, Missing, Drop); }
+    }
+
+    private static void __Canon(BridgeNode N, RefMap X, List<string> Missing, bool Drop){
+        for(int I = N.Props.Count - 1; I >= 0; I--){
+            BridgeProp P = N.Props[I];
+            if(P.Kind != BridgeKind.Ref){ continue; }
+
+            string? At = Target(X, P.Value);
+            if(At == null){
+                Missing.Add($"{X.Of[N]}.{P.Key} → «{P.Value}»");
+                if(Drop){ N.Props.RemoveAt(I); }
+                continue;
+            }
+
+            BridgeProp? Id = X.Path[At].Attrs.Find(A => A.Key == IdAttr);
+            P.Value = Id != null && X.Ids.TryGetValue(Id.Value, out string? Owner) && Owner == At ? "*" + Id.Value : At;
+        }
+        foreach(BridgeNode C in N.Children){ __Canon(C, X, Missing, Drop); }
+    }
+
+    // Для плагина: *id → путь (пути в Disk совпадут со Studio после Push)
+    public static void ToPaths(List<DiffOp> Ops, RefMap X){
+        foreach(DiffOp Op in Ops){
+            for(int I = 0; I < Op.Set.Count; I++){
+                BridgeProp P = Op.Set[I];
+                if(P.Kind != BridgeKind.Ref || !P.Value.StartsWith('*')){ continue; }
+                Op.Set[I] = new BridgeProp(P.Key, X.Ids[P.Value[1..]], BridgeKind.Ref);
+            }
+        }
     }
 }
 

@@ -1,4 +1,1 @@
-ServerScriptService "ServerScriptService" {
-    Script "ObbyManager" @src="Scripts/ServerScriptService/ObbyManager.lua"
-    Script "LeaderboardService" @src="Scripts/ServerScriptService/LeaderboardService.lua"
-}
+ServerScriptService "ServerScriptService"

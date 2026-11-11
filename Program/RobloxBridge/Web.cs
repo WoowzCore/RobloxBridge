@@ -119,6 +119,15 @@ aside{ display:flex; flex-direction:column; gap:12px; min-height:0; overflow:aut
 #ErrorTitle{ font-size:15px; font-weight:700; color:#ff8c98; }
 #ErrorDetails{ margin:0; overflow:auto; background:var(--bg); border-radius:8px; padding:10px; font:12px/1.5 Consolas,monospace; white-space:pre-wrap; word-break:break-word; }
 #ErrorBox button{ align-self:flex-end; }
+
+button.Act.pull, button.Act.push { color: #fff; border-color: transparent; }
+button.Act.pull { background: #2d69be; }
+button.Act.push { background: #28914f; }
+button.Act.pull:hover:not(:disabled) { background: #3a7ad4; }
+button.Act.push:hover:not(:disabled) { background: #32a65e; }
+button.Act.pull:disabled, button.Act.push:disabled { opacity: .45; }
+.Act b { font-size: 14px; }
+.Act small { display: block; font-size: 11px; font-weight: 400; opacity: .85; }
 </style>
 </head>
 <body>
@@ -163,8 +172,8 @@ aside{ display:flex; flex-direction:column; gap:12px; min-height:0; overflow:aut
             <section class="Card" id="SyncCard">
                 <div class="Title">Синхронизация</div>
                 <div class="Acts">
-                    <button id="BtnPull" class="Act"><b>⬇ Pull</b><small>Studio → файлы</small></button>
-                    <button id="BtnPush" class="Act primary"><b id="BtnPushT">Push</b><small id="BtnPushS">файлы → Studio</small></button>
+                    <button id="BtnPull" class="Act pull"><b>Studio → файлы</b><small>Pull · сохранить</small></button>
+                    <button id="BtnPush" class="Act push"><b id="BtnPushT">Файлы → Studio</b><small id="BtnPushS">Push · применить</small></button>
                     <button id="BtnApply" class="Act"><b>✔ Применить</b><small id="BtnApplyS">после предпросмотра</small></button>
                     <button id="BtnUndo" class="Act"><b>↩ Отменить</b><small>последнее применение</small></button>
                 </div>
@@ -435,8 +444,8 @@ function renderSync(){
 
     $('BtnPull').disabled  = !ok || busy;
     $('BtnPush').disabled  = !ok || busy;
-    $('BtnPushT').textContent = A ? '⬆ Push' : '⬆ Push: предпросмотр';
-    $('BtnPushS').textContent = A ? 'файлы → Studio, сразу' : 'файлы → Studio, сначала показать';
+    $('BtnPushT').textContent = 'Файлы → Studio';
+    $('BtnPushS').textContent = 'Push · ' + (A ? 'применить сразу' : 'сначала предпросмотр');
 
     const canApply = ok && !busy && S.sync.canApply;
     $('BtnApply').disabled = !canApply;

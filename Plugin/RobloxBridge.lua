@@ -74,6 +74,16 @@ local function Text(Parent, Order, Str, Opt)
 		TextSize = Opt.Size or 14, Text = Str, TextColor3 = Opt.Color or C.Text }, Parent)
 end
 
+-- Текст, который можно выделить и скопировать (Ctrl+C)
+local function SelText(Parent, Order, Str, Opt)
+	Opt = Opt or {}
+	return make("TextBox", { LayoutOrder = Order, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY,
+		BackgroundTransparency = 1, BorderSizePixel = 0, TextEditable = false, ClearTextOnFocus = false,
+		MultiLine = true, TextWrapped = true, TextXAlignment = Left, TextYAlignment = Top,
+		Font = Opt.Code and Enum.Font.Code or Enum.Font.SourceSans, TextSize = Opt.Size or 14,
+		Text = Str, TextColor3 = Opt.Color or C.Text }, Parent)
+end
+
 local function Card(Parent, Order)
 	local F = make("Frame", { LayoutOrder = Order, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY,
 		BorderSizePixel = 0, BackgroundColor3 = C.Card }, Parent)
@@ -84,12 +94,17 @@ local function Card(Parent, Order)
 	return F
 end
 
+local PullColor, PushColor = Color3.fromRGB(45, 105, 190), Color3.fromRGB(40, 145, 80)
+
 local function Button(Parent, Order, Str, Style, Size)
+	local Solid = Style == "primary" or Style == "pull" or Style == "push"
+	local Fill = Style == "pull" and PullColor or Style == "push" and PushColor
+		or (Style == "primary" and C.Accent or C.Btn)
 	local B = make("TextButton", { LayoutOrder = Order, Size = Size or UDim2.new(1, 0, 0, Style == "link" and 22 or 30),
 		BorderSizePixel = 0, AutoButtonColor = false, TextWrapped = true, TextSize = 14, Text = Str,
-		Font = Style == "primary" and Enum.Font.SourceSansBold or Enum.Font.SourceSans,
-		BackgroundColor3 = Style == "primary" and C.Accent or C.Btn,
-		TextColor3 = Style == "primary" and White or (Style == "link" and Blue or C.BtnText) }, Parent)
+		Font = Solid and Enum.Font.SourceSansBold or Enum.Font.SourceSans,
+		BackgroundColor3 = Fill,
+		TextColor3 = Solid and White or (Style == "link" and Blue or C.BtnText) }, Parent)
 	if Style == "link" then
 		B.BackgroundTransparency = 1
 		B.TextXAlignment = Left
@@ -462,7 +477,9 @@ do
 	local SkipProp = { Name = true, Source = true, UniqueId = true, HistoryId = true, SourceAssetId = true,
 		ScriptGuid = true, Color3uint8 = true, BrickColor = true }
 	local Simple = { bool = true, int = true, float = true, double = true, int64 = true, string = true, Content = true,
-		Vector2 = true, Vector3 = true, UDim = true, UDim2 = true, Color3 = true, CFrame = true, Rect = true, NumberRange = true }
+		Vector2 = true, Vector3 = true, UDim = true, UDim2 = true, Color3 = true, CFrame = true, Rect = true, NumberRange = true,
+		Ref = true, Font = true, BrickColor = true, NumberSequence = true, ColorSequence = true, Vector3int16 = true,
+		PhysicalProperties = true, Faces = true, Axes = true }
 	local function Supported(T) return Simple[T] or string.sub(T, 1, 5) == "Enum:" end
 	local function GetProp(I, N) return I[N] end
 
@@ -473,6 +490,7 @@ do
 		return V
 	end
 
+	local RevPath
 	local function Enc(T, V)
 		if T == "bool" then return { t = "b", v = V }
 		elseif T == "int" or T == "float" or T == "double" or T == "int64" then return { t = "n", v = R(V) }
@@ -490,6 +508,34 @@ do
 		elseif T == "NumberRange" then return { t = "nr", v = { R(V.Min), R(V.Max) } }
 		elseif T == "Color3" then
 			return { t = "c3", v = { math.floor(V.R * 255 + 0.5), math.floor(V.G * 255 + 0.5), math.floor(V.B * 255 + 0.5) } }
+		elseif T == "Ref" then
+			local P = typeof(V) == "Instance" and RevPath(V)
+			if not P then return nil end
+			return { t = "ref", v = P }
+		elseif T == "Font" then
+			local Name = string.match(V.Family, "^rbxasset://fonts/families/(.+)%.json$") or V.Family
+			return { t = "ft", v = Name .. "|" .. V.Weight.Name .. "|" .. V.Style.Name }
+		elseif T == "BrickColor" then return { t = "bc", v = V.Name }
+		elseif T == "Vector3int16" then return { t = "v3i", v = { V.X, V.Y, V.Z } }
+		elseif T == "PhysicalProperties" then
+			return { t = "pp", v = table.concat({ R(V.Density), R(V.Friction), R(V.Elasticity), R(V.FrictionWeight), R(V.ElasticityWeight) }, ",") }
+		elseif T == "NumberSequence" then
+			local P = {}
+			for I, K in ipairs(V.Keypoints) do
+				local E = R(K.Envelope)
+				P[I] = R(K.Time) .. ":" .. R(K.Value) .. (E ~= 0 and (":" .. E) or "")
+			end
+			return { t = "ns", v = table.concat(P, ",") }
+		elseif T == "ColorSequence" then
+			local P = {}
+			for I, K in ipairs(V.Keypoints) do P[I] = R(K.Time) .. ":" .. HexOf(K.Value) end
+			return { t = "cs", v = table.concat(P, ",") }
+		elseif T == "Faces" or T == "Axes" then
+			local P = {}
+			for _, N in ipairs(T == "Faces" and { "Top", "Bottom", "Left", "Right", "Back", "Front" } or { "X", "Y", "Z" }) do
+				if V[N] then table.insert(P, N) end
+			end
+			return { t = T == "Faces" and "fc" or "ax", v = #P > 0 and table.concat(P, ",") or "None" }
 		elseif T == "CFrame" then
 			local RX, RY, RZ = V:ToEulerAnglesXYZ()
 			return { t = "cf", v = { R(V.X), R(V.Y), R(V.Z), R(math.deg(RX)), R(math.deg(RY)), R(math.deg(RZ)) } }
@@ -517,14 +563,40 @@ do
 		return E.t .. ":" .. tostring(V)
 	end
 
+	local ExtraProps = {
+		WeldConstraint = { Part0 = "Ref", Part1 = "Ref" },
+		Fire = { Heat = "float" },
+		Smoke = { Opacity = "float", RiseVelocity = "float" },
+		Sound = { SoundId = "Content" },
+		UICorner = { CornerRadius = "UDim" },
+		Humanoid = { Health = "float" },
+		MeshPart = { CollisionFidelity = "Enum:CollisionFidelity" },
+		TrussPart = { Style = "Enum:Style" },
+		BasePart = { CustomPhysicalProperties = "PhysicalProperties" },
+		SpawnLocation = { TeamColor = "BrickColor" },
+		BrickColorValue = { Value = "BrickColor" },
+		ParticleEmitter = { Color = "ColorSequence", Size = "NumberSequence", Transparency = "NumberSequence", Squash = "NumberSequence" },
+		Beam = { Color = "ColorSequence", Transparency = "NumberSequence" },
+		Trail = { Color = "ColorSequence", Transparency = "NumberSequence", WidthScale = "NumberSequence" },
+		UIGradient = { Color = "ColorSequence", Transparency = "NumberSequence" },
+		TextLabel = { FontFace = "Font" },
+		TextButton = { FontFace = "Font" },
+		TextBox = { FontFace = "Font" },
+		Handles = { Faces = "Faces" },
+		ArcHandles = { Axes = "Axes" },
+	}
+
 	local function PropsOf(Class)
 		local Cached = PropCache[Class]
 		if Cached then return Cached end
 		local Map, Cur, Guard = {}, Class, 0
 		while Cur and Cur ~= "" and Guard < 40 do
+			for N, T in pairs(ExtraProps[Cur] or {}) do
+				if Map[N] == nil then Map[N] = T end
+			end
 			local Info = Schema.Classes[Cur]
 			if not Info then break end
-			for N, T in pairs(Info.Props) do
+			for N, T in pairs(Info.Props or {}) do
 				if Map[N] == nil then Map[N] = T end
 			end
 			Cur = Info.Super
@@ -587,7 +659,7 @@ do
 	local function Kids(Inst, Path)
 		local Items = {}
 		for _, Ch in ipairs(Inst:GetChildren()) do
-			if not Ch:IsA("PartOperation") then table.insert(Items, Ch) end
+			if not Ch:IsA("PartOperation") and Ch.ClassName ~= "TouchTransmitter" then table.insert(Items, Ch) end
 		end
 		table.sort(Items, function(A, B)
 			if A.Name ~= B.Name then return A.Name < B.Name end
@@ -615,6 +687,24 @@ do
 			if S then Walk(S, Name) end
 		end
 		return Map
+	end
+
+	-- Объект → путь (для ссылок). Строится лениво, один раз на Pull. Цели в Ignore и вне сервисов дают nil.
+	local RefCfg, Rev, RefIgn = nil, nil, {}
+	RevPath = function(Inst)
+		if not RefCfg then return nil end
+		if not Rev then
+			Rev = {}
+			for P, I in pairs(Index(RefCfg)) do Rev[I] = P end
+		end
+		local P = Rev[Inst]
+		if not P then return nil end
+		local Acc = ""
+		for Seg in string.gmatch(P, "[^/]+") do
+			Acc = Acc == "" and Seg or (Acc .. "/" .. Seg)
+			if RefIgn[Acc] then return nil end
+		end
+		return P
 	end
 
 	-- ===== Сериализация Studio =====
@@ -667,6 +757,7 @@ do
 		Counter = 0
 		local Ign = {}
 		for _, P in ipairs(Cfg.ignore or {}) do Ign[P] = true end
+		RefCfg, Rev, RefIgn = Cfg, nil, Ign
 		local Svc, Skipped = {}, {}
 		for _, Name in ipairs(Cfg.services or {}) do
 			local S = game:FindService(Name)
@@ -753,6 +844,45 @@ do
 		elseif T == "Rect" then local L = Nums(S, 4); return Rect.new(L[1], L[2], L[3], L[4])
 		elseif T == "NumberRange" then local L = Nums(S, 2); return NumberRange.new(L[1], L[2])
 		elseif T == "Color3" then return Hex(S)
+		elseif T == "Font" then
+			local Fam, W, St = string.match(S, "^(.-)|(%w+)|(%w+)$")
+			if not Fam then error("шрифт: Семья|Вес|Стиль, получено: " .. S, 0) end
+			if not string.find(Fam, "://", 1, true) then Fam = "rbxasset://fonts/families/" .. Fam .. ".json" end
+			local Wt, Sty = Enum.FontWeight:FromName(W), Enum.FontStyle:FromName(St)
+			if not Wt or not Sty then error("нет веса/стиля шрифта: " .. W .. "/" .. St, 0) end
+			return Font.new(Fam, Wt, Sty)
+		elseif T == "BrickColor" then
+			local B = BrickColor.new(S)
+			if B.Name ~= S then error("нет BrickColor «" .. S .. "» (имя с учётом регистра)", 0) end
+			return B
+		elseif T == "Vector3int16" then local L = Nums(S, 3); return Vector3int16.new(L[1], L[2], L[3])
+		elseif T == "PhysicalProperties" then local L = Nums(S, 5); return PhysicalProperties.new(L[1], L[2], L[3], L[4], L[5])
+		elseif T == "NumberSequence" or T == "ColorSequence" then
+			local Ks = {}
+			for Item in string.gmatch(S, "[^,]+") do
+				if T == "NumberSequence" then
+					local L = {}
+					for X in string.gmatch(Item, "[^:]+") do table.insert(L, tonumber(X) or error("не число: " .. X, 0)) end
+					if #L == 2 then table.insert(Ks, NumberSequenceKeypoint.new(L[1], L[2]))
+					elseif #L == 3 then table.insert(Ks, NumberSequenceKeypoint.new(L[1], L[2], L[3]))
+					else error("точка кривой: время:значение[:разброс], получено: " .. Item, 0) end
+				else
+					local Tm, Hx = string.match(Item, "^([^:]+):(#%x%x%x%x%x%x)$")
+					if not Tm or not tonumber(Tm) then error("точка цвета: время:#RRGGBB, получено: " .. Item, 0) end
+					table.insert(Ks, ColorSequenceKeypoint.new(tonumber(Tm), Hex(Hx)))
+				end
+			end
+			return T == "NumberSequence" and NumberSequence.new(Ks) or ColorSequence.new(Ks)
+		elseif T == "Faces" or T == "Axes" then
+			local Items = {}
+			if S ~= "None" then
+				for N in string.gmatch(S, "[^,]+") do
+					local E = (T == "Faces" and Enum.NormalId or Enum.Axis):FromName(N)
+					if not E then error("нет «" .. N .. "» у " .. T, 0) end
+					table.insert(Items, E)
+				end
+			end
+			return (T == "Faces" and Faces or Axes).new(table.unpack(Items))
 		elseif T == "CFrame" then
 			local PS, RS = string.match(S, "^([^|]*)|?(.*)$")
 			local P = Nums(PS, 3)
@@ -821,6 +951,7 @@ do
 	end
 
 	-- ===== Применение =====
+	local Defer = {}
 	local function SetProps(Inst, Op, Errs, J)
 		local Types = PropsOf(Op.class).types
 		local function Keep(K)
@@ -828,7 +959,14 @@ do
 			local Ok, Old = pcall(GetProp, Inst, K)
 			if Ok then table.insert(J, function() Inst[K] = Old end) end
 		end
+		local Ordered = {}
 		for _, P in ipairs(Op.set or {}) do
+			if P.k ~= "Health" then table.insert(Ordered, P) end
+		end
+		for _, P in ipairs(Op.set or {}) do
+			if P.k == "Health" then table.insert(Ordered, P) end   -- после MaxHealth
+		end
+		for _, P in ipairs(Ordered) do
 			local K = P.k
 			if K == "Source" then
 				Keep(K)
@@ -838,6 +976,9 @@ do
 				local T = Types[K]
 				if not T or SkipProp[K] or not Supported(T) then
 					table.insert(Errs, Op.path .. "." .. K .. ": нет в схеме, пропущено")
+				elseif P.f == "f" and T == "Ref" then
+					Keep(K)
+					table.insert(Defer, { Inst, K, P.v, Op.path })
 				else
 					Keep(K)
 					local Ok, E = pcall(function()
@@ -853,7 +994,11 @@ do
 		end
 		for _, K in ipairs(Op.reset or {}) do
 			local Def = DefaultsOf(Op.class)
-			if not Def then
+			if Types[K] == "Ref" or Types[K] == "PhysicalProperties" then
+				Keep(K)
+				local Ok, E = pcall(function() Inst[K] = nil end)
+				if not Ok then table.insert(Errs, Op.path .. "." .. K .. ": " .. tostring(E)) end
+			elseif not Def then
 				table.insert(Errs, Op.path .. "." .. K .. ": нельзя вернуть к умолчанию (сервис)")
 			elseif Def.raw[K] == nil then
 				table.insert(Errs, Op.path .. "." .. K .. ": нет значения по умолчанию")
@@ -896,6 +1041,7 @@ do
 	end
 
 	local function ApplyOps(Ops, Cfg)
+		Defer = {}
 		local Map = Index(Cfg)
 		local Created, Changed, Deleted, Skipped = 0, 0, 0, 0
 		local Errs, Failed, J = {}, {}, {}
@@ -955,6 +1101,16 @@ do
 					end
 				end
 			end
+			
+			for _, D in ipairs(Defer) do
+				local Target = Map[D[3]]
+				if not Target then
+					table.insert(Errs, D[4] .. "." .. D[2] .. ": цель не найдена в Studio: " .. D[3])
+				else
+					local Ok3, E3 = pcall(function() D[1][D[2]] = Target end)
+					if not Ok3 then table.insert(Errs, D[4] .. "." .. D[2] .. ": " .. tostring(E3)) end
+				end
+			end
 		end)
 		if not Ok then table.insert(Errs, "Прервано: " .. tostring(Err)) end
 		return Created, Changed, Deleted, Skipped, Errs, J
@@ -985,11 +1141,12 @@ do
 	SyncCard.Visible = false
 	Text(SyncCard, 1, "Синхронизация", { Bold = true, Size = 15 })
 
-	local BtnRow = make("Frame", { LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 34), BackgroundTransparency = 1 }, SyncCard)
+	local BtnRow = make("Frame", { LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 52), BackgroundTransparency = 1 }, SyncCard)
 	List(BtnRow, 6, Enum.FillDirection.Horizontal)
-	local PullBtn = Button(BtnRow, 1, "⬆ Pull", "normal", UDim2.new(0.5, -3, 1, 0))
-	local PushBtn = Button(BtnRow, 2, "⬇ Push", "primary", UDim2.new(0.5, -3, 1, 0))
-	Text(SyncCard, 3, "Pull: Studio → файлы · Push: файлы → Studio", { Color = C.Dim, Size = 12 })
+	local PullBtn = Button(BtnRow, 1, "", "pull", UDim2.new(0.5, -3, 1, 0))
+	local PushBtn = Button(BtnRow, 2, "", "push", UDim2.new(0.5, -3, 1, 0))
+	PullBtn.RichText, PushBtn.RichText = true, true
+	PullBtn.Text = '<b>Studio → файлы</b>\n<font size="11">Pull · сохранить</font>'
 
 	local AutoBtn = Button(SyncCard, 4, "", "link")
 	local ApplyBtn = Button(SyncCard, 5, "✔ Применить", "primary")
@@ -1001,7 +1158,7 @@ do
 	local InfoBar = make("Frame", { Position = UDim2.new(0, 0, 0, 4), Size = UDim2.new(0, 3, 1, -8), BorderSizePixel = 0,
 		BackgroundColor3 = Blue }, InfoBox)
 	Corner(InfoBar, 2)
-	local InfoLabel = Text(InfoBox, 1, "", { Size = 14 })
+	local InfoLabel = SelText(InfoBox, 1, "", { Size = 14 })
 	Pad(InfoLabel, 6, 8, 6, 12)
 
 	local function RefreshButtons()
@@ -1014,7 +1171,8 @@ do
 	end
 	local function RefreshAuto()
 		AutoBtn.Text = (AutoApply and "☑ " or "☐ ") .. "Применять сразу после проверки"
-		PushBtn.Text = AutoApply and "⬆ Push" or "⬆ Предпросмотр"
+		PushBtn.Text = '<b>Файлы → Studio</b>\n<font size="11">Push · '
+			.. (AutoApply and "применить" or "предпросмотр") .. '</font>'
 	end
 	RefreshAuto()
 	Click(AutoBtn, function()
@@ -1047,11 +1205,35 @@ do
 	local ChangesCard = Card(Root, 4)
 	ChangesCard.Visible = false
 	local ChangesHead = Text(ChangesCard, 1, "", { Rich = true, Bold = true, Size = 15 })
-	local ListFrame = make("Frame", { LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY, BorderSizePixel = 0,
+	local CopyBtn = Button(ChangesCard, 2, "", "link")
+	CopyBtn.TextSize = 13
+	local ListFrame = make("Frame", { LayoutOrder = 3, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY, BorderSizePixel = 0,
 		BackgroundColor3 = C.Input }, ChangesCard)
 	Corner(ListFrame, 6)
 	Pad(ListFrame, 6, 8, 6, 8)
 	List(ListFrame, 2)
+
+	-- Режим копирования: весь список одним выделяемым текстом
+	local CopyBox = Box(ChangesCard, 4, 0, true)
+	CopyBox.AutomaticSize = AutoY
+	CopyBox.TextEditable = false
+	CopyBox.Visible = false
+	local CopyMode, AllLines = false, {}
+	local function RefreshCopy()
+		CopyBtn.Text = CopyMode and "◂ Обычный (цветной) вид" or "Выделить и скопировать текст"
+		ListFrame.Visible = not CopyMode
+		CopyBox.Visible = CopyMode
+		if CopyMode then
+			local T = {}
+			for I = 1, math.min(#AllLines, 2000) do T[I] = AllLines[I] end
+			CopyBox.Text = table.concat(T, "\n")
+		end
+	end
+	Click(CopyBtn, function()
+		CopyMode = not CopyMode
+		RefreshCopy()
+	end)
+	RefreshCopy()
 
 	local function ShowLines(Lines)
 		for _, Ch in ipairs(ListFrame:GetChildren()) do
@@ -1085,6 +1267,8 @@ do
 		HasLines = #Lines > 0
 		ChangesCard.Visible = HasLines and State.Found and State.Place == "ready"
 		LastLines = Lines
+		AllLines = Lines
+		RefreshCopy()
 		Report()
 	end
 

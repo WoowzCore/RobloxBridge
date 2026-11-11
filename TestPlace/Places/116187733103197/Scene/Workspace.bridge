@@ -1,113 +1,152 @@
-Workspace "Workspace" AirDensity=0.001 Gravity=196.2 FallenPartsDestroyHeight=-500 StreamingEnabled=false {
-    Part "Baseplate" Size=512,20,512 Anchored BottomSurface=Smooth CFrame=0,-10,0 Color=#F5F5F5 Locked TopSurface=Smooth Material=SmoothPlastic
-
-    SpawnLocation "SpawnLocation" Size=8,1,8 Anchored BottomSurface=Smooth CFrame=0,1.5,0 Duration=0 Neutral TopSurface=Smooth Color=#4D6BFE Material=Neon {
+Workspace "Workspace" AirDensity=0.001 AirTurbulenceIntensity=0 AllowThirdPartySales=false AuthorityMode=Automatic ClientAnimatorThrottling=Default DistributedGameTime=0 ExplorerIconContent="" FallHeightEnabled FallenPartsDestroyHeight=-500 GlobalWind=0,0,0 Gravity=196.2 LevelOfDetail=Automatic LuauTypeCheckMode=Default ModelStreamingMode=Default NextGenerationPhysicsSolver=Default PredictiveStreamingMode=Default ReplicationFrequency=Automatic ReplicationThroughput=Automatic Retargeting=Default StreamOutBehavior=Opportunistic StreamingAdaptiveRadius=false StreamingEnabled=false StreamingIntegrityMode=PauseOutsideLoadedArea StreamingMinRadius=64 StreamingTargetRadius=1024 {
+    Part "Baseplate" Size=512,20,512 Anchored BottomSurface=Smooth CFrame=0,-10,0 Locked TopSurface=Smooth
+    Folder "ClassTest" {
+        Folder "Adornees" {
+            BoxHandleAdornment "BHA" Size=5,5,5 Adornee=@"*target" AlwaysOnTop Color3=#FFAA00 Transparency=0.6 ZIndex=2
+            BillboardGui "Bill" Size=4,0,1,0 Adornee=@"*target" AlwaysOnTop StudsOffset=0,4,0 {
+                TextLabel "L" Size=1,0,1,0 BackgroundTransparency=1 Text="Цель" TextScaled TextWrapped
+            }
+            Highlight "HL" Adornee=@"*target" DepthMode=Occluded FillTransparency=0.7
+            SelectionBox "SB" Adornee=@"*target" Color3=#00FF00 LineThickness=0.05 SurfaceTransparency=0.8
+            Part "T0" Size=4,4,4 Anchored CFrame=0,3,40 Color=#44AA66 $_id="target" {
+                ClickDetector "CD" MaxActivationDistance=20
+                ProximityPrompt "PP" ActionText="Open" HoldDuration=0.5 KeyboardKeyCode=F MaxActivationDistance=8 ObjectText="Door" RequiresLineOfSight=false
+                SurfaceGui "Surf" Adornee=@"*target" CanvasSize=300,300 {
+                    TextLabel "L" Size=1,0,1,0 BackgroundTransparency=0.3 Text="Hello" TextScaled TextWrapped
+                }
+            }
+        }
+        Folder "Attrs" #"Tag с пробелом" #"TagA" $Bool="true" $Code="123" $Empty="" $Flag $Hp=100 $Name="x" $Neg=-3 $Off=false $Pos=1,2,3 $Speed=0.5 $Tint=#FF8800 $Ui=0,10,0,20 $V2=1,2 {
+            LocalScript "Cli" @src="Scripts/Workspace/ClassTest/Attrs/Cli.lua" Disabled
+            ModuleScript "Mod" @src="Scripts/Workspace/ClassTest/Attrs/Mod.lua"
+            Script "Srv" @src="Scripts/Workspace/ClassTest/Attrs/Srv.lua" Disabled
+        }
+        Folder "Constraints" {
+            AlignPosition "AlignPos" Attachment0=@"*att0" Attachment1=@"*att1" MaxForce=5000 Responsiveness=50
+            Part "B0" Size=2,2,2 Anchored CFrame=0,10,30 Color=#888888 {
+                Attachment "A0" CFrame=0,-1,0 $_id="att0"
+            }
+            Part "B1" Size=1,1,1 CFrame=0,7,30 Color=#CC8833 {
+                Attachment "A1" CFrame=0,1,0 $_id="att1"
+            }
+            BallSocketConstraint "Ball" Attachment0=@"*att0" Attachment1=@"*att1" LimitsEnabled UpperAngle=30
+            Beam "Beam" Attachment0=@"*att0" Attachment1=@"*att1" FaceCamera Segments=5 Width0=0.5 Width1=0.2
+            VectorForce "Force" Attachment0=@"*att1" Force=0,100,0 RelativeTo=World
+            HingeConstraint "Hinge" ActuatorType=Motor AngularVelocity=2 Attachment0=@"*att0" Attachment1=@"*att1" MotorMaxTorque=1000
+            RopeConstraint "Rope" Attachment0=@"*att0" Attachment1=@"*att1" Length=8 Thickness=0.2 Visible
+            SpringConstraint "Spring" Attachment0=@"*att0" Attachment1=@"*att1" FreeLength=3 Stiffness=50 Visible
+            Trail "Trail" Attachment0=@"*att0" Attachment1=@"*att1" MinLength=0.2
+        }
+        Folder "Curves" {
+            ArcHandles "AH" Adornee=@"*cpart" Axes=X,Z
+            BrickColorValue "BC" Value="Bright red"
+            ScreenGui "CG" {
+                Frame "F" Size=0,100,0,100 {
+                    UIGradient "UG" Color=0:#FF0000,1:#0000FF Rotation=45 Transparency=0:0,1:0.5
+                }
+                TextLabel "T1" Size=0,200,0,30 FontFace="GothamSSm|Bold|Normal" Text="Gotham Bold"
+                TextLabel "T2" Position=0,0,0,40 Size=0,200,0,30 FontFace="Arial|Bold|Italic" Text="Arial Italic"
+                TextButton "T3" Position=0,0,0,80 Size=0,200,0,30 FontFace="SourceSansPro|Light|Normal" Text="Кнопка"
+            }
+            Part "Em" Size=1,1,1 Anchored CFrame=0,3,90 Color=#444444 $_id="cpart" {
+                Beam "Bm" Color=0:#00FFFF,1:#FF00FF Transparency=0:0,1:0.8 Width1=2
+                ParticleEmitter "PE" Size=0:0.5,0.5:2:0.3,1:0 Color=0:#FF0000,0.5:#FFFF00,1:#0000FF Lifetime=1,2 Rate=30 Squash=0:0,1:1 Transparency=0:0,0.8:0.2,1:1
+                Trail "Tr" Color=0:#FFFFFF,0.3:#FF8800,1:#000000 Transparency=0:0.1,1:1 WidthScale=0:1,1:0
+            }
+            Handles "H" Adornee=@"*cpart" Faces=Top,Front
+            Part "Phys" Size=2,2,2 Anchored CFrame=5,3,90 Color=#AAAAAA CustomPhysicalProperties=0.5,0.8,0.1,1,1
+            Part "Phys2" Size=2,2,2 Anchored CFrame=8,3,90 Color=#AAAAAA CustomPhysicalProperties=2,0,0.9,100,1
+            SpawnLocation "Spawn3" Size=6,1,6 Anchored CFrame=20,0.5,90 Color=#3366CC Neutral=false TeamColor="Bright blue"
+        }
+        Folder "Effects" {
+            Part "E0" Size=2,2,2 Anchored CFrame=0,3,70 Color=#444444 {
+                Fire "Fire" Size=6 Color=#FF8800 Heat=8 SecondaryColor=#CC0000
+                ParticleEmitter "PE" Acceleration=0,5,0 Lifetime=1,2 LightEmission=0.5 Rotation=0,360 Speed=2,5
+                PointLight "PL" Brightness=3 Color=#FFAA55 Range=14 Shadows
+                SpotLight "SL" Angle=60 Brightness=2 Face=Bottom Range=20
+                Smoke "Smoke" Size=4 Color=#AAAAAA Opacity=0.7 RiseVelocity=3
+                Sound "Snd" AudioContent="rbxassetid://9120386436" Looped PlaybackSpeed=1.5 RollOffMaxDistance=60 RollOffMode=Linear SoundGroup=@"Workspace/ClassTest/Effects/Group" SoundId="rbxassetid://9120386436" Volume=0.8
+                Sparkles "Sp" Color=#1C4A29 SparkleColor=#FFFF00
+                SurfaceLight "SuL" Brightness=2 Face=Top
+            }
+            SoundGroup "Group" Volume=0.8
+        }
+        Folder "Gui" {
+            ScreenGui "G" DisplayOrder=3 ResetOnSpawn=false ScreenInsets=None {
+                Frame "Main" Position=0.5,0,0.5,0 Size=0,300,0,240 AnchorPoint=0.5,0.5 BackgroundColor3=#202830 BorderSizePixel=0 ClipsDescendants NextSelectionUp=@"Workspace/ClassTest/Gui/G/Main/Btn" Rotation=5 {
+                    TextButton "Btn" Size=1,0,0,40 AutoButtonColor=false BackgroundColor3=#3366CC LayoutOrder=2 NextSelectionUp=@"Workspace/ClassTest/Gui/G/Main/Title" Text="Нажми" TextColor3=#FFFFFF
+                    ImageLabel "Img" Size=0,64,0,64 ImageContent="rbxasset://textures/face.png" ImageTransparency=0.2 LayoutOrder=3 ScaleType=Fit
+                    TextBox "In" Size=1,0,0,30 ClearTextOnFocus=false LayoutOrder=4 PlaceholderText="Введите" Text=""
+                    ScrollingFrame "Scroll" Size=1,0,0,50 CanvasSize=0,0,0,600 LayoutOrder=5 ScrollBarThickness=8 ScrollingDirection=Y
+                    TextLabel "Title" Size=1,0,0,30 BackgroundTransparency=1 LayoutOrder=1 RichText Text="Заголовок" TextColor3=#FFFFFF TextSize=20 TextXAlignment=Left
+                    UICorner "UC" BottomLeftRadius=0,12 BottomRightRadius=0,12 CornerRadius=0,12 TopLeftRadius=0,12 TopRightRadius=0,12
+                    UIListLayout "UL" HorizontalAlignment=Center Padding=0,6 SortOrder=LayoutOrder
+                    UIPadding "UP" PaddingBottom=0,8 PaddingLeft=0,8 PaddingRight=0,8 PaddingTop=0,8
+                    UIStroke "US" Color=#FFFFFF Thickness=2 Transparency=0.5
+                    UISizeConstraint "USC" MinSize=100,50
+                }
+            }
+        }
+        Folder "Joints" {
+            Part "J0" Size=2,2,2 Anchored CFrame=0,3,20 Color=#888888 $_id="j0"
+            Part "J1" Size=1,1,1 CFrame=0,5,20 Color=#CC3333 $_id="мой id #1"
+            Part "J2" Size=1,1,1 CFrame=4,3,20 Color=#3333CC
+            Part "J3" Size=1,1,1 CFrame=-4,3,20 Color=#33CC33
+            Motor6D "Motor" C0=4,0,0 Part0=@"*j0" Part1=@"Workspace/ClassTest/Joints/J2"
+            WeldConstraint "WC" Part0=@"*j0" Part1=@"Workspace/ClassTest/Joints/J3"
+            Weld "Weld" C0=0,2,0 Part0=@"*j0" Part1=@"*мой id #1"
+        }
+        Folder "Misc" {
+            Model "Dummy" LevelOfDetail=Disabled ModelStreamingMode=Persistent PrimaryPart=@"Workspace/ClassTest/Misc/Dummy/HumanoidRootPart" {
+                Part "Head" Size=2,1,1 Anchored CFrame=0,4.5,80 Color=#F5CD30
+                Humanoid "Humanoid" AutoRotate=false DisplayName="Манекен" Health=150 HipHeight=1.5 JumpPower=60 MaxHealth=150 WalkSpeed=20
+                Part "HumanoidRootPart" Size=2,2,1 Anchored CFrame=0,3,80
+            }
+            Model "Pivoted" {
+                Part "P1" Size=2,2,2 Anchored CFrame=14,3,80 Color=#9966CC
+            }
+            Seat "Seat" Size=2,1,2 Anchored CFrame=25,3,80 Color=#CC3333 Disabled
+            SpawnLocation "Spawn2" Size=6,1,6 Anchored CFrame=40,0.5,80 Color=#33AA33 Duration=0 Enabled=false Neutral=false
+            Tool "Sword" CanBeDropped=false Grip=0,-0.5,0|0,90,0 ToolTip="Меч" {
+                Part "Handle" Size=0.4,4,0.4 Anchored CFrame=20,3,80 Color=#CCCCCC
+            }
+            VehicleSeat "VSeat" Size=2,1,4 Anchored CFrame=30,3,80 Color=#3333CC MaxSpeed=60 Torque=5 TurnSpeed=2
+        }
+        Folder "PartTypes" {
+            Part "Ball" Size=3,3,3 Anchored CFrame=0,3,60 Color=#CC3333 Material=Neon Reflectance=0.1 Shape=Ball Transparency=0.25
+            CornerWedgePart "Corner" Anchored CFrame=20,3,60 Color=#AA6633
+            Part "Cyl" Size=4,2,2 Anchored CFrame=5,3,60 CastShadow=false Color=#3366CC Material=Metal Shape=Cylinder
+            Part "Dec" Size=4,4,1 Anchored CFrame=40,3,60 Color=#DDDDDD {
+                Decal "D" TextureContent="rbxasset://textures/face.png" Transparency=0.2
+                Texture "Tx" Face=Top TextureContent="rbxasset://textures/face.png"
+            }
+            Part "Ghost" Size=2,2,2 Anchored CFrame=10,3,60 CanCollide=false CanQuery=false CanTouch=false Color=#FFFFFF Locked Massless
+            MeshPart "Mesh" Size=1,1,1 Anchored CFrame=30,3,60 RenderFidelity=Performance
+            Part "Spec" Size=2,2,2 Anchored CFrame=35,3,60 Color=#FFCC00 {
+                SpecialMesh "SM" MeshType=Sphere Offset=0,0.5,0 Scale=1,2,1
+            }
+            TrussPart "Truss" Size=2,6,2 Anchored CFrame=25,5,60 Color=#888888 Style=NoSupports
+            WedgePart "Wedge" Size=2,2,4 Anchored CFrame=15,3,60 Color=#33AA66
+        }
+        Folder "Values" {
+            Part "A/B" Size=1,1,1 Anchored CFrame=6,3,50 Color=#999999
+            BoolValue "B" Value
+            Color3Value "C" Value=#33CC33
+            CFrameValue "CF" Value=1,2,3|0,90,0
+            IntValue "I" Value=-5
+            NumberValue "N" Value=0.125
+            StringValue "S" Value="строка \"в кавычках\" \\ \n вторая\tтаб"
+            ObjectValue "ToFolder" Value=@"Workspace/ClassTest/Joints"
+            ObjectValue "ToService" Value=@"Workspace"
+            ObjectValue "ToSlash" Value=@"Workspace/ClassTest/Values/A%2FB"
+            ObjectValue "ToTwin2" Value=@"Workspace/ClassTest/Values/Twin~2"
+            Part "Twin" Size=1,1,1 Anchored CFrame=0,3,50 Color=#999999
+            Part "Twin" Size=1,1,1 Anchored CFrame=3,3,50 Color=#999999
+            Vector3Value "V" Value=1,2,3
+        }
+    }
+    SpawnLocation "SpawnLocation" Size=8,1,8 Anchored BottomSurface=Smooth CFrame=0.068,0.5,-0.971 Duration=0 TopSurface=Smooth {
         Decal "Decal" Face=Top TextureContent="rbxasset://textures/SpawnLocation.png"
     }
-
-    Model "Obby" $Sections=9 {
-        Model "S1 Start" {
-            Part "Floor" Size=16,1,16 Anchored CFrame=0,0.5,-10 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Wall L" Size=1,4,16 Anchored CFrame=-8.5,2.5,-10 Color=#D0D0D0 Material=SmoothPlastic
-            Part "Wall R" Size=1,4,16 Anchored CFrame=8.5,2.5,-10 Color=#D0D0D0 Material=SmoothPlastic
-            Part "Checkpoint" Size=6,0.2,6 Anchored CFrame=0,1.1,-10 Color=#4D6BFE Material=Neon CanCollide=false Transparency=0.4
-            Part "Sign" Size=4,2,0.2 Anchored CFrame=0,3,-17.5 Color=#4D6BFE Material=Neon {
-                SurfaceGui "Gui" {
-                    TextLabel "Label" Size=1,0,1,0 BackgroundTransparency=1 Text="S1 · START" TextColor3=#FFFFFF TextScaled
-                }
-            }
-        }
-
-        Model "S2 Kill Bricks" $StartZ=-40 $StepZ=8 $Steps=6 {
-            Part "Island A" Size=10,1,10 Anchored CFrame=0,0.5,-25 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Kill A" Size=10,1,4 Anchored CFrame=0,0.5,-32 Color=#FF4B4B Material=Neon
-            Part "Platform A" Size=6,1,3 Anchored CFrame=0,0.5,-37 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Kill B" Size=6,1,3 Anchored CFrame=0,0.5,-41 Color=#FF4B4B Material=Neon
-            Part "Platform B" Size=6,1,3 Anchored CFrame=0,0.5,-45 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Checkpoint" Size=6,0.2,6 Anchored CFrame=0,1.1,-49 Color=#4D6BFE Material=Neon CanCollide=false Transparency=0.4
-            Part "Finish Pad" Size=10,1,6 Anchored CFrame=0,0.5,-49 Color=#E8E8E8 Material=SmoothPlastic
-        }
-
-        Model "S3 Moving Platforms" $SpanX=12 $Speed=0.35 $Count=4 {
-            Part "Start Pad" Size=8,1,8 Anchored CFrame=0,0.5,-60 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Mover 1" Size=4,1,4 Anchored CFrame=-6,1,-72 Color=#4D6BFE Material=Neon
-            Part "Mover 2" Size=4,1,4 Anchored CFrame=6,1,-80 Color=#4D6BFE Material=Neon
-            Part "Mover 3" Size=4,1,4 Anchored CFrame=-6,1,-88 Color=#4D6BFE Material=Neon
-            Part "Finish Pad" Size=10,1,8 Anchored CFrame=0,0.5,-98 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Checkpoint" Size=6,0.2,6 Anchored CFrame=0,1.1,-98 Color=#4D6BFE Material=Neon CanCollide=false Transparency=0.4
-            Script "MoverController" @src="Scripts/Workspace/Obby/S3 Moving Platforms/MoverController.lua"
-        }
-
-        Model "S4 Rotating Discs" $SpeedDeg=45 $DiscCount=3 {
-            Part "Start Pad" Size=8,1,8 Anchored CFrame=0,0.5,-112 Color=#E8E8E8 Material=SmoothPlastic
-            Model "Disc 1" {
-                Part "Base" Size=1,1,1 Anchored CFrame=0,1,-125 Color=#4D6BFE Material=SmoothPlastic
-                Part "Disc" Size=1,12,12 Anchored CFrame=0,1.5,-125 Color=#4D6BFE Material=Neon Shape=Cylinder
-                Part "Wall" Size=1,2,12 Anchored CFrame=0,2.5,-125 Color=#D0D0D0 Material=SmoothPlastic
-            }
-            Model "Disc 2" {
-                Part "Base" Size=1,1,1 Anchored CFrame=0,1,-138 Color=#4D6BFE Material=SmoothPlastic
-                Part "Disc" Size=1,12,12 Anchored CFrame=0,1.5,-138 Color=#4D6BFE Material=Neon Shape=Cylinder
-                Part "Wall" Size=1,2,12 Anchored CFrame=0,2.5,-138 Color=#D0D0D0 Material=SmoothPlastic
-            }
-            Part "Finish Pad" Size=10,1,10 Anchored CFrame=0,0.5,-152 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Checkpoint" Size=6,0.2,6 Anchored CFrame=0,1.1,-152 Color=#4D6BFE Material=Neon CanCollide=false Transparency=0.4
-            Script "SpinnerController" @src="Scripts/Workspace/Obby/S4 Rotating Discs/SpinnerController.lua"
-        }
-
-        Model "S5 Conveyors" $Speed=8 {
-            Part "Start Pad" Size=8,1,8 Anchored CFrame=0,0.5,-165 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Belt A" Size=6,1,16 Anchored CFrame=0,0.5,-178 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Belt B" Size=6,1,16 Anchored CFrame=0,0.5,-195 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Belt C" Size=6,1,16 Anchored CFrame=0,0.5,-212 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Finish Pad" Size=10,1,8 Anchored CFrame=0,0.5,-228 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Checkpoint" Size=6,0.2,6 Anchored CFrame=0,1.1,-228 Color=#4D6BFE Material=Neon CanCollide=false Transparency=0.4
-            Script "ConveyorController" @src="Scripts/Workspace/Obby/S5 Conveyors/ConveyorController.lua"
-        }
-
-        Model "S6 Slide" $TiltDeg=22 $LavaDepth=3 {
-            Part "Start Pad" Size=8,1,8 Anchored CFrame=0,0.5,-242 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Slide" Size=10,1,40 Anchored CFrame=0,-1,-268|22,0,0 Color=#4D6BFE Material=SmoothPlastic
-            Part "Lava" Size=20,2,40 Anchored CFrame=0,-6,-268 Color=#FF4B4B Material=Neon
-            Part "Finish Pad" Size=10,1,10 Anchored CFrame=0,-8,-292 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Checkpoint" Size=6,0.2,6 Anchored CFrame=0,-7.4,-292 Color=#4D6BFE Material=Neon CanCollide=false Transparency=0.4
-        }
-
-        Model "S7 Disappearing" $OnTime=1.2 $OffTime=0.8 $Offset=0.4 {
-            Part "Start Pad" Size=8,1,8 Anchored CFrame=0,0.5,-305 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Tile 1" Size=4,1,4 Anchored CFrame=0,1,-315 Color=#4D6BFE Material=Neon
-            Part "Tile 2" Size=4,1,4 Anchored CFrame=0,1,-322 Color=#4D6BFE Material=Neon
-            Part "Tile 3" Size=4,1,4 Anchored CFrame=0,1,-329 Color=#4D6BFE Material=Neon
-            Part "Tile 4" Size=4,1,4 Anchored CFrame=0,1,-336 Color=#4D6BFE Material=Neon
-            Part "Finish Pad" Size=10,1,10 Anchored CFrame=0,0.5,-348 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Checkpoint" Size=6,0.2,6 Anchored CFrame=0,1.1,-348 Color=#4D6BFE Material=Neon CanCollide=false Transparency=0.4
-            Script "TileController" @src="Scripts/Workspace/Obby/S7 Disappearing/TileController.lua"
-        }
-
-        Model "S8 Spinners" $SpeedDeg=90 $BeamCount=2 {
-            Part "Start Pad" Size=8,1,8 Anchored CFrame=0,0.5,-362 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Base" Size=4,1,4 Anchored CFrame=0,0.5,-376 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Spinner Hub" Size=1,1,1 Anchored CFrame=0,1,-376 Color=#4D6BFE Material=Neon
-            Part "Beam A" Size=12,1,1 Anchored CFrame=6,1,-376 Color=#FF4B4B Material=Neon
-            Part "Beam B" Size=12,1,1 Anchored CFrame=-6,1,-376 Color=#FF4B4B Material=Neon
-            Part "Finish Pad" Size=10,1,10 Anchored CFrame=0,0.5,-390 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Checkpoint" Size=6,0.2,6 Anchored CFrame=0,1.1,-390 Color=#4D6BFE Material=Neon CanCollide=false Transparency=0.4
-            Script "SpinnerController" @src="Scripts/Workspace/Obby/S8 Spinners/SpinnerController.lua"
-        }
-
-        Model "S9 Finish" $Reward=500 {
-            Part "Floor" Size=16,1,16 Anchored CFrame=0,0.5,-405 Color=#E8E8E8 Material=SmoothPlastic
-            Part "Pedestal" Size=4,2,4 Anchored CFrame=0,2,-405 Color=#4D6BFE Material=Neon Shape=Cylinder
-            Part "Finish Pad" Size=8,0.2,8 Anchored CFrame=0,1.1,-405 Color=#4D6BFE Material=Neon CanCollide=false Transparency=0.3
-            Part "Banner" Size=10,2,0.2 Anchored CFrame=0,5,-412 Color=#4D6BFE Material=Neon {
-                SurfaceGui "Gui" {
-                    TextLabel "Label" Size=1,0,1,0 BackgroundTransparency=1 Text="FINISH" TextColor3=#FFFFFF TextScaled
-                }
-            }
-        }
-    }
-	
-	Part "Lamp Red"     $_prefab="Prefabs/Lamp.bridge" CFrame=20,0.25,0  $Color=#FF0000
-	Part "Lamp Green"   $_prefab="Prefabs/Lamp.bridge" CFrame=20,0.25,10 $Color=#00FF00 $Brightness=6
-	Part "Lamp Default" $_prefab="Prefabs/Lamp.bridge" CFrame=20,0.25,20
+    Terrain "Terrain" Size=2044,252,2044 Anchored AudioCanCollide BackSurface=Smooth BottomSurface=Inlet CFrame=0,0,0 CanCollide CanQuery CanTouch CastShadow CollisionGroup="Default" Color=#A3A2A5 Decoration EnableFluidForces FrontSurface=Smooth GrassLength=0.7 LeftSurface=Smooth Locked Massless=false Material=Plastic PivotOffset=0,0,0 Reflectance=0 RightSurface=Smooth RootPriority=0 TopSurface=Studs Transparency=0 WaterColor=#0C545C WaterReflectance=1 WaterTransparency=0.3 WaterWaveSize=0.15 WaterWaveSpeed=10
 }
