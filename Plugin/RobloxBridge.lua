@@ -1330,7 +1330,9 @@ do
 			if LastColor == Green then Kind = "ok"
 			elseif LastColor == Yellow then Kind = "warn"
 			elseif LastColor == Red then Kind = "err" end
-			Call("/report" .. Q(), { text = LastText, kind = Kind, canApply = Pending ~= nil, canUndo = UndoJ ~= nil, lines = LastLines }, true)
+			local TS = State.TS or {}
+			Call("/report" .. Q(), { text = LastText, kind = Kind, canApply = Pending ~= nil, canUndo = UndoJ ~= nil,
+				tApply = TS.Apply and TS.Apply() or false, tUndo = TS.Undo and TS.Undo() or false, lines = LastLines }, true)
 		end)
 	end
 
@@ -1788,7 +1790,7 @@ do
 			if P == A.Path then Has = true else table.insert(New, P) end
 		end
 		if not Has then table.insert(New, A.Path) end
-		local D, E = Call("/settings" .. Q(), { autoSplit = Data.autoSplit, services = Data.services, ignore = New })
+		local D, E = Call("/settings" .. Q(), { autoSplit = Data.autoSplit, services = Data.services, ignore = New, scriptExt = Data.scriptExt, inlineLines = Data.inlineLines })
 		if E then error(E, 0) end
 		SetPending(nil)
 		SetInfo((Has and "Объект снова синхронизируется: " or "Объект исключён из синхронизации: ") .. A.Path
@@ -2360,6 +2362,10 @@ do
 			Apply = function() Run("Террейн: применяю", TerrainApply) end,
 			Undo = function() Run("Террейн: отмена", TerrainUndoRun) end,
 		}
+		State.TS = {
+			Apply = function() return TPendingN ~= nil end,
+			Undo = function() return TJournal ~= nil end,
+		}
 		Click(TPull, State.T.Pull)
 		Click(TPush, State.T.Push)
 		Click(TApply, State.T.Apply)
@@ -2444,20 +2450,29 @@ do
 		.. "Новое значение применится при следующем Pull.", { Color = C.Dim, Size = 13 })
 	local AutoBox = Box(AutoCard, 3, 28, false)
 
+	local Scr = { Card = Card(SRoot, 4) }
+	Text(Scr.Card, 1, "Скрипты", { Bold = true, Size = 15 })
+	Text(Scr.Card, 2, "Расширение НОВЫХ скриптов: luau (по умолчанию) или lua. Уже существующие файлы не переименовываются и "
+		.. "остаются как есть.", { Color = C.Dim, Size = 13 })
+	Scr.Ext = Box(Scr.Card, 3, 28, false)
+	Text(Scr.Card, 4, "Новый скрипт короче N строк остаётся кодом (@code) в .bridge, длиннее выносится в файл. "
+		.. "По умолчанию 8, 0 — всегда в файл (0–200).", { Color = C.Dim, Size = 13 })
+	Scr.Inl = Box(Scr.Card, 5, 28, false)
+
 	local SvcCard = Card(SRoot, 3)
 	Text(SvcCard, 1, "Сервисы", { Bold = true, Size = 15 })
 	Text(SvcCard, 2, "По одному в строке. Сервисы вне списка не синхронизируются.", { Color = C.Dim, Size = 13 })
 	local SvcBox = Box(SvcCard, 3, 150, true)
 
-	local IgnCard = Card(SRoot, 4)
+	local IgnCard = Card(SRoot, 5)
 	Text(IgnCard, 1, "Игнорировать", { Bold = true, Size = 15 })
 	Text(IgnCard, 2, "Пути объектов вместе с потомками, по одному в строке, например Workspace/Camera.", { Color = C.Dim, Size = 13 })
 	local IgnBox = Box(IgnCard, 3, 70, true)
 
-	local SaveBtn = Button(SRoot, 5, "Сохранить настройки", "primary", UDim2.new(1, 0, 0, 32))
-	local StatL = Text(SRoot, 6, "", { Color = C.Dim, Size = 13 })
+	local SaveBtn = Button(SRoot, 6, "Сохранить настройки", "primary", UDim2.new(1, 0, 0, 32))
+	local StatL = Text(SRoot, 7, "", { Color = C.Dim, Size = 13 })
 
-	local SplCard = Card(SRoot, 7)
+	local SplCard = Card(SRoot, 8)
 	Text(SplCard, 1, "Вынесено в отдельные файлы", { Bold = true, Size = 15 })
 	Text(SplCard, 2, "Клик по пути — выделить в Explorer. «Вернуть» — вернуть в общий файл. ✕ — убрать только запись (для «фантомов»), объекты и файлы не трогаются.", { Color = C.Dim, Size = 13 })
 	local SplitsFrame = make("Frame", { LayoutOrder = 3, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY,
@@ -2504,6 +2519,8 @@ do
 	local function Fill(D)
 		InfoL.Text = "PlaceId " .. tostring(D.placeId) .. " · создан " .. tostring(D.created)
 		AutoBox.Text = tostring(D.autoSplit)
+		Scr.Ext.Text = tostring(D.scriptExt or "luau")
+		Scr.Inl.Text = tostring(D.inlineLines or 8)
 		SvcBox.Text = table.concat(D.services or {}, "\n")
 		IgnBox.Text = table.concat(D.ignore or {}, "\n")
 		for _, Ch in ipairs(SplitsFrame:GetChildren()) do
@@ -2577,7 +2594,11 @@ do
 			if not pcall(game.GetService, game, S) then table.insert(Bad, S) end
 		end
 		if #Bad > 0 then error("Нет такого сервиса в Studio: " .. table.concat(Bad, ", "), 0) end
-		local D, E = Call("/settings" .. Q(), { autoSplit = N, services = Svc, ignore = SplitLines(IgnBox.Text) })
+		local Ext = string.lower(string.gsub(Scr.Ext.Text, "^%s*%.?(.-)%s*$", "%1"))
+		if Ext ~= "lua" and Ext ~= "luau" then error("Расширение скриптов: lua или luau", 0) end
+		local Inl = tonumber(Scr.Inl.Text)
+		if not Inl or Inl < 0 or Inl > 200 or Inl ~= math.floor(Inl) then error("Строк в @code: целое число 0–200", 0) end
+		local D, E = Call("/settings" .. Q(), { autoSplit = N, services = Svc, ignore = SplitLines(IgnBox.Text), scriptExt = Ext, inlineLines = Inl })
 		if E then error(E, 0) end
 		SStatus((D.text or "Готово") .. ". Чтобы изменения попали в файлы, сделайте Pull.", Green)
 		ShowObject(true)

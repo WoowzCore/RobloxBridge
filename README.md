@@ -43,7 +43,7 @@
 - Windows (WebView2 Runtime).
 - .NET 8 SDK (`net8.0`, без `-windows`).
 - Roblox Studio.
-- Собственные библиотеки проекта: `WLO`, `WLO.Math`, `WLO.Web.WebView2`, `WLO.Window.GLFW`, `WL.Core`, `WL.Logger`.
+- Собственные библиотеки проекта: [WoowzLib](https://github.com/WoowzCore/WoowzLib).
 - Запускать Studio и приложение **без прав администратора**.
 
 ## Установка

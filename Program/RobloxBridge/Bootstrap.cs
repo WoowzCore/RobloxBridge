@@ -136,9 +136,22 @@ public static class Bootstrap{
                 case "PickDump": __PickDump(); break;
                 case "OpenDumpPage": Process.Start(new ProcessStartInfo(Dump.GitHubUrl){ UseShellExecute = true }); break;
                 
+                case "Agents":{
+                    if(!Project.IsOpen){
+                        __ShowError("AGENTS.md", "Сначала откройте проект.");
+                        break;
+                    }
+
+                    string Dir = Project.Current!.Dir;
+                    if(Bridge.WriteAgents(Dir)){ __EnqueueLog($"AGENTS.md создан: {Path.Combine(Dir, "AGENTS.md")}", "Info"); }
+                    else{                        __EnqueueLog("AGENTS.md уже существует. Чтобы создать заново, удалите файл и нажмите кнопку ещё раз.", "Info"); }
+                    break;
+                }
+                
                 case "SyncCmd":{
                     string Cmd = Doc.RootElement.GetProperty("Data").GetProperty("Cmd").GetString() ?? "";
-                    if(Cmd != "pull" && Cmd != "preview" && Cmd != "apply" && Cmd != "undo"){ break; }
+                    string[] Allowed = ["pull", "preview", "apply", "undo", "terrain-pull", "terrain-push", "terrain-apply", "terrain-undo"];
+                    if(!Allowed.Contains(Cmd)){ break; }
                     Live.Send(Cmd);
                     __EnqueueLog($"Команда плагину: {Cmd} (дойдёт за ~3 с)", "Info");
                     break;
@@ -243,6 +256,12 @@ public static class Bootstrap{
             }else if(Project.TryCreate(Folder, Info.UniverseId, out string Error)){
                 Settings.LastProject = Project.Current!.Dir;
                 __EnqueueLog($"Проект создан: {Project.Current.Data.Name} ({Project.Current.Dir})", "Info");
+
+                try{
+                    Bridge.WriteAgents(Project.Current.Dir);
+                }catch(Exception e){
+                    __EnqueueLog($"Не удалось создать AGENTS.md: {e.Message}", "Info");
+                }
             }else{
                 __ShowError("Не удалось создать проект", Error);
             }
@@ -650,7 +669,8 @@ public static class Pull{
         if(Fresh.Count == 0){ throw new InvalidOperationException("Присланные сервисы не входят в Services (place.json)"); }
 
         List<string> Prob = [];
-        List<BridgeNode> Old = Bridge.ReadScene(PlaceDir, Prob);
+        List<string> SrcWarn = [];
+        List<BridgeNode> Scene = Bridge.ReadScene(PlaceDir, Prob, SrcWarn);
         if(Prob.Count > 0){ throw new InvalidOperationException("Файлы сцены не читаются, Pull остановлен: " + string.Join("; ", Prob.Take(5))); }
 
         HashSet<string> Names = [..Fresh.Select(F => F.Name)];
@@ -673,11 +693,11 @@ public static class Pull{
         Prefabs.Collapse(Fresh, "", PRoot, PrefabWarn);
 
         // Сервисы, которых нет в запросе, берём с диска как есть
-        List<BridgeNode> All = [..Old.Where(O => !Names.Contains(O.Name)), ..Fresh];
+        List<BridgeNode> All = [..Scene.Where(O => !Names.Contains(O.Name)), ..Fresh];
         List<BridgeNode> Result = [..Bridge.Filter(All, Place.Services, Place.Ignore)];
 
         List<string> Warn = [];
-        Bridge.WriteScene(PlaceDir, Result, Place.Splits, Threshold(Place), Warn);
+        Bridge.WriteScene(PlaceDir, Result, Place.Splits, Threshold(Place), Warn, Place.ScriptExt, Place.InlineLines);
         Bridge.WriteMeta(PlaceDir, Result, Place.Splits);
         __SavePlace(PlaceDir, Place);
 
@@ -692,6 +712,8 @@ public static class Pull{
 
         List<string> Lines = Diff.Render(Ops);
         Lines.AddRange(PrefabWarn.Select(W => W.StartsWith(" ") ? W : "! " + W));
+        Lines.AddRange(SrcWarn.Select(W => "! " + W));
+        Lines.AddRange(Warn.Select(W => "! " + W));
         Lines.AddRange(IdWarn.Select(W => "! " + W));
         Lines.AddRange(Lost.Take(10).Select(W => "! ссылка не сохранена (цель вне сохраняемых объектов): " + W));
         if(Lost.Count > 10){ Lines.Add($"! … ещё ссылок: {Lost.Count - 10}"); }
@@ -780,8 +802,10 @@ public static class Push{
         List<BridgeNode> Studio = Pull.ReadStudio(Doc.RootElement, Place, out int _);
 
         List<string> Prob = [];
-        List<BridgeNode> Scene = Bridge.ReadScene(PlaceDir, Prob);
-        Prefabs.Expand(Scene, Prefabs.ProjectRoot(PlaceDir), Prob);
+        List<string> SrcWarn = [];
+        List<BridgeNode> Scene = Bridge.ReadScene(PlaceDir, Prob, SrcWarn);
+        List<string> PrefabWarn = [];
+        Prefabs.Expand(Scene, Prefabs.ProjectRoot(PlaceDir), Prob, PrefabWarn);
         List<BridgeNode> Disk = [..Bridge.Filter(Scene, Place.Services, Place.Ignore)];
         if(Prob.Count > 0){ throw new InvalidOperationException("Файлы сцены не читаются: " + string.Join("; ", Prob.Take(5))); }
         if(Disk.Count == 0){ throw new InvalidOperationException("В папке плейса нет файлов сцены. Сначала сделай Pull."); }
@@ -812,6 +836,8 @@ public static class Push{
         }
 
         Lines.AddRange(Diff.Render(Ops));
+        Lines.AddRange(PrefabWarn.Select(W => "! " + W));
+        Lines.AddRange(SrcWarn.Select(W => "! " + W));
         string Text = Apply
             ? $"Push: применяется +{C.Created} ~{C.Changed} −{C.Deleted}"
             : $"Push, предпросмотр: создастся {C.Created}, изменится {C.Changed}, удалится {C.Deleted}";
@@ -1145,6 +1171,16 @@ public static class Sync{
             if(V < 0 || V > 100000){ throw new InvalidOperationException("AutoSplit: нужно целое число от 0"); }
             if(V != Place.AutoSplit){ Changes.Add($"AutoSplit {Place.AutoSplit} → {V}"); Place.AutoSplit = V; }
         }
+        if(J?["scriptExt"] != null){
+            string V = ((string?)J["scriptExt"] ?? "").Trim().TrimStart('.').ToLowerInvariant();
+            if(V != "lua" && V != "luau"){ throw new InvalidOperationException("ScriptExt: нужно luau или lua"); }
+            if(V != Place.ScriptExt){ Changes.Add($"ScriptExt {Place.ScriptExt} → {V}"); Place.ScriptExt = V; }
+        }
+        if(J?["inlineLines"] != null){
+            int V = (int?)J["inlineLines"] ?? -1;
+            if(V < 0 || V > 200){ throw new InvalidOperationException("InlineLines: целое число от 0 до 200"); }
+            if(V != Place.InlineLines){ Changes.Add($"InlineLines {Place.InlineLines} → {V}"); Place.InlineLines = V; }
+        }
         if(J?["services"] != null){
             List<string> S = __Lines(J["services"]);
             if(S.Count == 0){ throw new InvalidOperationException("Services не может быть пустым"); }
@@ -1168,7 +1204,8 @@ public static class Sync{
         }).ToList();
         return new{
             status = "ok", text = Text, placeId = Place.PlaceId, created = Place.Created,
-            autoSplit = Place.AutoSplit, services = Place.Services, ignore = Place.Ignore, splits = Splits
+            autoSplit = Place.AutoSplit, scriptExt = Place.ScriptExt, inlineLines = Place.InlineLines,
+            services = Place.Services, ignore = Place.Ignore, splits = Splits
         };
     }
     
@@ -1254,7 +1291,13 @@ public static class Prefabs{
     public const string Attr = "_prefab";
 
     private static readonly string[] __PosKeys = ["CFrame", "Pivot", "Position"];
-    private static readonly Regex    __Slot    = new(@"\{([A-Za-z0-9_]+)\}");
+    // ${Имя}, ${Имя:raw}, $${ (буквальное ${). Одно выражение и для свойств, и для Lua
+    private static readonly Regex __Tok = new(@"\$\$\{|\$\{([A-Za-z0-9_]+)(:raw)?\}");
+    // старый {Имя} больше не подставляется, только подсказка
+    private static readonly Regex __Old = new(@"(?<!\$)\{([A-Za-z0-9_]+)\}");
+    private static readonly Regex __Num = new(@"^-?\d+(\.\d+)?$");
+
+    private static List<string>? __Hints;   // куда складывать подсказки во время Expand (вызов под lock в Sync)
 
     public static string ProjectRoot(string PlaceDir){
         return System.IO.Path.GetFullPath(System.IO.Path.Combine(PlaceDir, "..", ".."));
@@ -1262,16 +1305,32 @@ public static class Prefabs{
 
     // ---------------------------------------------------------------- Push: развернуть экземпляры в полные деревья
 
-    public static void Expand(List<BridgeNode> Level, string Root, List<string> Problems){
+    public static void Expand(List<BridgeNode> Level, string Root, List<string> Problems, List<string>? Warn = null){
+        List<string>? Prev = __Hints;
+        __Hints = Warn;
+
+        try{ __Expand(Level, Root, Problems, Warn); }
+        finally{ __Hints = Prev; }
+    }
+
+    private static void __Expand(List<BridgeNode> Level, string Root, List<string> Problems, List<string>? Warn){
         for(int I = 0; I < Level.Count; I++){
             BridgeNode  N    = Level[I];
             BridgeProp? Mark = N.Attrs.Find(A => A.Key == Attr);
 
-            if(Mark == null){ Expand(N.Children, Root, Problems); continue; }
+            if(Mark == null){ __Expand(N.Children, Root, Problems, Warn); continue; }
 
             string      Where = N.Origin.Length > 0 ? N.Origin : N.Name;
             BridgeNode? T     = __Load(Root, Mark.Value, Where, Problems);
-            if(T != null){ Level[I] = __Apply(N, T, Where, Problems); }
+            if(T == null){ continue; }
+
+            Level[I] = __Apply(N, T, Where, Problems);
+
+            string? Full = __Resolve(Root, Mark.Value);
+            if(Warn != null && Full != null && !Bridge.IsInside(Root, Full)){
+                string W = $"префаб вне проекта: {Full} (на другом компьютере его может не быть)";
+                if(!Warn.Contains(W)){ Warn.Add(W); }
+            }
         }
     }
 
@@ -1350,39 +1409,44 @@ public static class Prefabs{
     // ---------------------------------------------------------------- шаблон
 
     private static BridgeNode? __Load(string Root, string Rel, string Where, List<string> Problems){
-        string? Full = __Safe(Root, Rel);
-        if(Full == null){        Problems.Add($"{Where}: недопустимый путь префаба \"{Rel}\""); return null; }
-        if(!File.Exists(Full)){  Problems.Add($"{Where}: префаб не найден: {Rel}");             return null; }
+        string? Full = __Resolve(Root, Rel);
+        if(Full == null){       Problems.Add($"{Where}: недопустимый путь префаба \"{Rel}\" (нужен файл .bridge)"); return null; }
+        if(!File.Exists(Full)){ Problems.Add($"{Where}: префаб не найден: {Full}");                               return null; }
 
         List<string>     Own = [];
         List<BridgeNode> T   = Bridge.Parse(File.ReadAllText(Full), Rel, Own);
 
         if(Own.Count == 0 && T.Count != 1){ Own.Add($"{Rel}: в шаблоне нужен ровно один корневой объект (сейчас {T.Count})"); }
-        if(Own.Count == 0){ __Files(T[0], System.IO.Path.GetDirectoryName(Full)!, Root, Own); }
+        if(Own.Count == 0){ __Files(T[0], System.IO.Path.GetDirectoryName(Full)!, Own); }
 
         if(Own.Count > 0){ Problems.AddRange(Own); return null; }
         return T[0];
     }
 
-    // @src в шаблоне - путь от папки шаблона
-    private static void __Files(BridgeNode N, string Dir, string Root, List<string> Own){
+    // Путь префаба: от корня проекта, "../Shared/X.bridge" или полный. Только .bridge.
+    private static string? __Resolve(string Root, string Rel){
+        string? Full = Bridge.ResolvePath(Root, Rel, out _);
+        return Full != null && Full.EndsWith(".bridge", StringComparison.OrdinalIgnoreCase) ? Full : null;
+    }
+
+    // @src в шаблоне: путь от папки шаблона, можно ../ и полный
+    private static void __Files(BridgeNode N, string Dir, List<string> Own){
         if(N.AtFile != null){ Own.Add($"{N.Origin}: @file в префабе не поддерживается"); N.AtFile = null; }
         if(N.Attrs.Any(A => A.Key == Attr)){ Own.Add($"{N.Origin}: вложенные префабы пока не поддерживаются"); }
 
         if(N.AtSrc != null){
-            string Full = System.IO.Path.GetFullPath(System.IO.Path.Combine(Dir, N.AtSrc));
-            string Rel  = System.IO.Path.GetRelativePath(Root, Full);
+            string? Full = Bridge.ResolvePath(Dir, N.AtSrc, out _);
 
-            if(System.IO.Path.IsPathRooted(N.AtSrc) || Rel.StartsWith("..") || !File.Exists(Full)){
-                Own.Add($"{N.Origin}: файл @src не найден или вне проекта: {N.AtSrc}");
+            if(Full == null || !File.Exists(Full)){
+                Own.Add($"{N.Origin}: файл @src не найден: {N.AtSrc}");
             }else{
                 N.Props.RemoveAll(X => X.Key == "Source");
-                N.Props.Add(new BridgeProp("Source", File.ReadAllText(Full), BridgeKind.Str));
+                N.Props.Add(new BridgeProp("Source", File.ReadAllText(Full).Replace("\r\n", "\n"), BridgeKind.Str));
             }
             N.AtSrc = null;
         }
 
-        foreach(BridgeNode C in N.Children){ __Files(C, Dir, Root, Own); }
+        foreach(BridgeNode C in N.Children){ __Files(C, Dir, Own); }
     }
 
     // Подставляет параметры, сдвигает позицию, накладывает строку экземпляра. T портится.
@@ -1394,7 +1458,7 @@ public static class Prefabs{
         Dictionary<string, BridgeProp> Par = [];
         foreach(BridgeProp A in T.Attrs){   Par[A.Key] = A; }
         foreach(BridgeProp A in Row.Attrs){ Par[A.Key] = A; }
-        __Subst(T, Par);
+        __Subst(T, Par, At, Problems);
 
         string? Key = __PosKey(T);
 
@@ -1436,24 +1500,106 @@ public static class Prefabs{
         return T;
     }
 
-    private static void __Subst(BridgeNode N, Dictionary<string, BridgeProp> Par){
-        foreach(BridgeProp P in N.Props){ __SubstProp(P, Par); }
-        foreach(BridgeProp P in N.Attrs){ __SubstProp(P, Par); }
-        foreach(BridgeNode C in N.Children){ __Subst(C, Par); }
+    private static void __Subst(BridgeNode N, Dictionary<string, BridgeProp> Par, string At, List<string> Problems){
+        string Where = N.Origin.Length > 0 ? $"{N.Origin} (экземпляр {At})" : At;
+
+        foreach(BridgeProp P in N.Props){
+            if(P.Kind == BridgeKind.Str && P.Key == "Source"){
+                if(P.Value.Contains("${")){ P.Value = __SubstText(P.Value, Par, true, Where, Problems); }
+            }else{
+                __SubstProp(P, Par, Where, Problems);
+            }
+        }
+        foreach(BridgeProp P in N.Attrs){    __SubstProp(P, Par, Where, Problems); }
+        foreach(BridgeNode C in N.Children){ __Subst(C, Par, At, Problems); }
     }
 
-    // "{Имя}" целиком - берём значение и тип параметра; внутри строки - подставляем текстом. Source не трогаем.
-    private static void __SubstProp(BridgeProp P, Dictionary<string, BridgeProp> Par){
-        if(P.Kind != BridgeKind.Str || P.Key == "Source" || !P.Value.Contains('{')){ return; }
+    // Значение целиком (${Имя} с кавычками или без) - берём значение и тип параметра; внутри строки - текстом.
+    private static void __SubstProp(BridgeProp P, Dictionary<string, BridgeProp> Par, string Where, List<string> Problems){
+        if(P.Kind == BridgeKind.Ref || !P.Value.Contains('{')){ return; }
 
-        Match M = __Slot.Match(P.Value);
-        if(M.Success && M.Value == P.Value && Par.TryGetValue(M.Groups[1].Value, out BridgeProp? Whole)){
-            P.Value = Whole.Value;
-            P.Kind  = Whole.Kind;
-            return;
+        Match M = __Tok.Match(P.Value);
+        if(M.Success && M.Length == P.Value.Length && M.Value != "$${"){
+            if(Par.TryGetValue(M.Groups[1].Value, out BridgeProp? Whole)){
+                P.Value = Whole.Value;
+                P.Kind  = Whole.Kind;
+                return;
+            }
         }
 
-        P.Value = __Slot.Replace(P.Value, X => Par.TryGetValue(X.Groups[1].Value, out BridgeProp? V) ? V.Value : X.Value);
+        P.Value = __SubstText(P.Value, Par, false, Where, Problems);
+    }
+
+    // Lua = true: ${Имя} -> Lua-литерал, ${Имя:raw} - текст как есть. Lua = false: всегда текст.
+    // Неизвестный ${Имя} - ошибка. Старый {Имя} не подставляется (в свойствах - подсказка).
+    private static string __SubstText(string Text, Dictionary<string, BridgeProp> Par, bool Lua, string Where, List<string> Problems){
+        if(!Lua && __Hints != null){
+            foreach(Match H in __Old.Matches(Text)){
+                string Name = H.Groups[1].Value;
+                if(!Par.ContainsKey(Name)){ continue; }
+
+                string W = $"{Where}: «{H.Value}» не подставляется, пишите ${{{Name}}}";
+                if(!__Hints.Contains(W)){ __Hints.Add(W); }
+            }
+        }
+
+        return __Tok.Replace(Text, M => {
+            if(M.Value == "$${"){ return "${"; }
+
+            string Name = M.Groups[1].Value;
+
+            if(!Par.TryGetValue(Name, out BridgeProp? V)){
+                Problems.Add($"{Where}: параметр «{Name}» не задан (ни в шаблоне, ни у экземпляра)");
+                return M.Value;
+            }
+
+            if(!Lua || M.Groups[2].Success){ return V.Value; }
+            return __Lit(V, Name, Where, Problems) ?? M.Value;
+        });
+    }
+
+    private static string? __Lit(BridgeProp V, string Name, string Where, List<string> Problems){
+        if(V.Kind == BridgeKind.Ref){
+            Problems.Add($"{Where}: параметр «{Name}» - ссылка, в скрипт её подставить нельзя");
+            return null;
+        }
+        if(V.Kind == BridgeKind.Str){ return __LuaStr(V.Value); }
+
+        string T = V.Value;
+        if(T == "true" || T == "false" || __Num.IsMatch(T)){ return T; }
+
+        if(T.Length == 7 && T[0] == '#' && T.Skip(1).All(Uri.IsHexDigit)){
+            return $"Color3.fromRGB({Convert.ToInt32(T.Substring(1, 2), 16)},{Convert.ToInt32(T.Substring(3, 2), 16)},{Convert.ToInt32(T.Substring(5, 2), 16)})";
+        }
+
+        string[] P = T.Split(',');
+        if(P.All(X => __Num.IsMatch(X))){
+            if(P.Length == 2){ return $"Vector2.new({T})"; }
+            if(P.Length == 3){ return $"Vector3.new({T})"; }
+            if(P.Length == 4){ return $"UDim2.new({T})"; }
+        }
+
+        return __LuaStr(T);   // всё остальное (например Enum-имя) - строкой
+    }
+
+    private static string __LuaStr(string S){
+        StringBuilder Sb = new("\"");
+
+        foreach(char C in S){
+            switch(C){
+                case '"':  Sb.Append("\\\""); break;
+                case '\\': Sb.Append("\\\\"); break;
+                case '\n': Sb.Append("\\n");  break;
+                case '\r': Sb.Append("\\r");  break;
+                case '\t': Sb.Append("\\t");  break;
+                default:
+                    if(C < 0x20){ Sb.Append('\\').Append(((int)C).ToString("D3")); }
+                    else{         Sb.Append(C); }
+                    break;
+            }
+        }
+
+        return Sb.Append('"').ToString();
     }
 
     // ---------------------------------------------------------------- позиция
@@ -1532,14 +1678,6 @@ public static class Prefabs{
     private static string __Norm(string V){
         return string.Join(",", V.Split('|', ',').Select(S =>
             double.TryParse(S, NumberStyles.Float, CultureInfo.InvariantCulture, out double D) ? Bridge.Num(D) : S.ToUpperInvariant()));
-    }
-
-    private static string? __Safe(string Root, string Rel){
-        if(string.IsNullOrWhiteSpace(Rel) || System.IO.Path.IsPathRooted(Rel)){ return null; }
-
-        string Full   = System.IO.Path.GetFullPath(System.IO.Path.Combine(Root, Rel));
-        string Prefix = Root.TrimEnd(System.IO.Path.DirectorySeparatorChar) + System.IO.Path.DirectorySeparatorChar;
-        return Full.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase) ? Full : null;
     }
 }
 
@@ -1734,6 +1872,9 @@ public sealed class PlaceData{
     
     public int AutoSplit { get; set; } = 500;   // 0 = автоматический вынос выключен
 
+    public string ScriptExt   { get; set; } = "luau";   // расширение НОВЫХ скриптов: luau или lua
+    public int    InlineLines { get; set; } = 8;        // новые скрипты до N строк остаются @code (0 = всегда в файл)
+    
     /// Путь объекта -> файл .bridge (относительно папки плейса). Заполняется и вручную, и автоматически.
     public Dictionary<string, string> Splits { get; set; } = [];
 }

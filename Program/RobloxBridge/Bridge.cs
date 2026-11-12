@@ -26,16 +26,22 @@ public sealed class BridgeNode{
     public string? AtFile;
     public string? AtSrc;
 
+    public string? AtCode;     // только при записи: короткий скрипт остаётся в .bridge
+    public string? SrcPath;    // только после ReadScene: @src ровно как написал пользователь
+    public bool    WasCode;    // только после ReadScene: скрипт был записан как @code
+    
     public string Origin = "";                // «файл:строка» для сообщений об ошибках
 
     public BridgeProp? Get(string Key) => Props.Find(P => P.Key == Key);
 }
 
 public static class Bridge{
-    public const int    FormatVersion = 1;
-    public const string SceneDir      = "Scene";
-    public const string ScriptsDir    = "Scripts";
-    public const int    MapMaxPerLevel = 40;
+    public const int    FormatVersion      = 1;
+    public const string SceneDir           = "Scene";
+    public const string ScriptsDir         = "Scripts";
+    public const int    MapMaxPerLevel     = 40;
+    public const string DefaultScriptExt   = "luau";
+    public const int    DefaultInlineLines = 8;
 
     public static readonly string[] DefaultServices = [
         "Workspace", "Lighting", "MaterialService", "ReplicatedFirst", "ReplicatedStorage", "ServerScriptService",
@@ -106,11 +112,22 @@ public static class Bridge{
         foreach(string T in N.Tags.OrderBy(T => T, StringComparer.Ordinal)){ Sb.Append(" #").Append(Quote(T)); }
 
         foreach(BridgeProp P in N.Props.OrderBy(P => { int I = Array.IndexOf(__PropFirst, P.Key); return I < 0 ? int.MaxValue : I; })
-                                       .ThenBy(P => P.Key, StringComparer.Ordinal)){
+                                 .ThenBy(P => P.Key, StringComparer.Ordinal)){
             __WriteProp(Sb, "", P);
         }
 
         foreach(BridgeProp P in N.Attrs.OrderBy(P => P.Key, StringComparer.Ordinal)){ __WriteProp(Sb, "$", P); }
+
+        if(N.AtCode != null){ // блок кода всегда последний на строке
+            Sb.Append(" @code=<<<\n");
+
+            foreach(string Line in N.AtCode.Split('\n')){
+                if(Line.Length > 0){ Sb.Append(Pad).Append("    ").Append(Line); }
+                Sb.Append('\n');
+            }
+
+            Sb.Append(Pad).Append(">>>");
+        }
 
         if(N.AtFile == null && N.Children.Count > 0){
             Sb.Append(" {\n");
@@ -271,6 +288,7 @@ public static class Bridge{
 
                 if(Key == "src"){       N.AtSrc  = V; }
                 else if(Key == "code"){
+                    N.WasCode = true;
                     N.Props.RemoveAll(P => P.Key == "Source");
                     N.Props.Add(new BridgeProp("Source", V, BridgeKind.Str));
                 }
@@ -461,51 +479,6 @@ public static class Bridge{
     // ======================================================================
     // Запись сцены на диск
 
-    private sealed class WriteCtx{
-        public Dictionary<string, string> Splits   = [];
-        public Dictionary<string, string> Files    = [];                                   // относительный путь -> текст
-        public HashSet<string>            Used     = new(StringComparer.OrdinalIgnoreCase);
-        public HashSet<string>            Seen     = [];
-        public List<string>               Warnings = [];
-    }
-
-    /// Раскладывает дерево по файлам и пишет в Scene/ и Scripts/ (только изменившиеся файлы, лишние удаляются).
-    /// Splits дополняется автоматическими выносами — после вызова сохрани его в place.json.
-    public static void WriteScene(string PlaceDir, List<BridgeNode> Roots, Dictionary<string, string> Splits, int AutoSplitLines, List<string> Warnings){
-        string Root = Path.GetFullPath(PlaceDir);
-        __SortTree(Roots);
-
-        WriteCtx Ctx = new(){ Splits = Splits, Warnings = Warnings };
-        __Measure(Roots, "", Splits, AutoSplitLines, true);
-
-        string[] RootPaths = __SiblingPaths(Roots, "");
-        string[] RootFiles = new string[Roots.Count];
-
-        for(int I = 0; I < Roots.Count; I++){
-            RootFiles[I] = __Unique(Ctx.Used, $"{SceneDir}/{__FileSeg(Roots[I].Name)}.bridge");
-        }
-
-        for(int I = 0; I < Roots.Count; I++){
-            BridgeNode Clone = __Emit(Roots[I], RootPaths[I], Ctx);
-            Ctx.Files[RootFiles[I]] = Write([Clone]);
-        }
-
-        foreach(string K in Splits.Keys){
-            if(!Ctx.Seen.Contains(K)){ Warnings.Add($"Splits: объект «{K}» не найден (переименован или удалён?)"); }
-        }
-
-        foreach(var (Rel, Text) in Ctx.Files){
-            string? Full = __Safe(Root, Rel);
-            if(Full == null){ throw new Exception($"Недопустимый путь файла: {Rel}"); }
-
-            __WriteIfChanged(Full, Text);
-        }
-
-        HashSet<string> Keep = new(Ctx.Files.Keys, StringComparer.OrdinalIgnoreCase);
-        __Clean(Root, SceneDir,   ".bridge", Keep);
-        __Clean(Root, ScriptsDir, ".lua",    Keep);
-    }
-
     /// Считает строки и помечает в Splits поддеревья, которые не влезают в лимит. Возвращает размер списка в строках.
     private static int __Measure(List<BridgeNode> L, string Parent, Dictionary<string, string> Splits, int Limit, bool Top){
         string[] Paths = __SiblingPaths(L, Parent);
@@ -533,47 +506,6 @@ public static class Bridge{
         return Total;
     }
 
-    private static BridgeNode __Emit(BridgeNode N, string NodePath, WriteCtx Ctx){
-        Ctx.Seen.Add(NodePath);
-
-        BridgeNode C = new(){ Class = N.Class, Name = N.Name, Tags = N.Tags, Attrs = N.Attrs, Props = [..N.Props] };
-
-        BridgeProp? Src = N.Get("Source");
-        if(Src != null && Src.Kind == BridgeKind.Str){
-            string Rel = __Unique(Ctx.Used, $"{ScriptsDir}/{__FileSegs(NodePath)}.lua");
-
-            Ctx.Files[Rel] = Src.Value;
-            C.Props.RemoveAll(P => P.Key == "Source");
-            C.AtSrc = Rel;
-        }
-
-        List<BridgeNode> Kids  = [];
-        string[]         Paths = __SiblingPaths(N.Children, NodePath);
-
-        for(int I = 0; I < N.Children.Count; I++){ Kids.Add(__Emit(N.Children[I], Paths[I], Ctx)); }
-
-        if(Ctx.Splits.TryGetValue(NodePath, out string? Target) && Kids.Count > 0){
-            bool Ok = Target.StartsWith(SceneDir + "/", StringComparison.OrdinalIgnoreCase)
-                   && Target.IndexOf('/', SceneDir.Length + 1) > 0
-                   && Target.EndsWith(".bridge", StringComparison.OrdinalIgnoreCase);
-
-            if(!Ok){
-                Ctx.Warnings.Add($"Splits: «{Target}» для {NodePath} — файл должен лежать в подпапке Scene/ и иметь расширение .bridge. Использую стандартное имя.");
-                Target = __DefaultFile(NodePath);
-                Ctx.Splits[NodePath] = Target;
-            }
-
-            string Rel = __Unique(Ctx.Used, Target.Replace('\\', '/'));
-
-            Ctx.Files[Rel] = Write(Kids);
-            C.AtFile = Rel;
-        }else{
-            C.Children = Kids;
-        }
-
-        return C;
-    }
-
     private static string __DefaultFile(string NodePath) => $"{SceneDir}/{__FileSegs(NodePath)}.bridge";
 
     private static string __FileSeg(string S){
@@ -586,27 +518,6 @@ public static class Bridge{
 
     private static string __FileSegs(string NodePath) => string.Join('/', NodePath.Split('/').Select(__FileSeg));
 
-    /// Гарантирует уникальное (без учёта регистра — Windows) имя файла: Name.ext, Name~2.ext...
-    private static string __Unique(HashSet<string> Used, string Rel){
-        string Ext  = Path.GetExtension(Rel);
-        string Stem = Rel.Substring(0, Rel.Length - Ext.Length);
-        string R    = Rel;
-        int    K    = 2;
-
-        while(!Used.Add(R)){ R = $"{Stem}~{K++}{Ext}"; }
-        return R;
-    }
-
-    /// Полный путь внутри папки плейса или null, если путь выходит за её пределы.
-    private static string? __Safe(string Root, string Rel){
-        if(string.IsNullOrWhiteSpace(Rel) || Path.IsPathRooted(Rel)){ return null; }
-
-        string Full   = Path.GetFullPath(Path.Combine(Root, Rel));
-        string Prefix = Root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-
-        return Full.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase) ? Full : null;
-    }
-
     private static void __WriteIfChanged(string Full, string Text){
         Directory.CreateDirectory(Path.GetDirectoryName(Full)!);
 
@@ -614,13 +525,187 @@ public static class Bridge{
             File.WriteAllText(Full, Text, __Utf8);
         }
     }
+    
+        private sealed class WriteCtx{
+        public string Root    = "";
+        public string Project = "";
+        public string ScriptExt   = DefaultScriptExt;
+        public int    InlineLines = DefaultInlineLines;
 
-    private static void __Clean(string Root, string Dir, string Ext, HashSet<string> Keep){
+        public Dictionary<string, string>     Splits = [];
+        public Dictionary<string, string>     Files  = new(StringComparer.OrdinalIgnoreCase); // полный путь -> текст
+        public Dictionary<string, BridgeNode> Old    = [];                                     // что лежало на диске до записи
+        public HashSet<string>                Seen   = [];
+        public List<string>                   Warnings = [];
+    }
+
+    /// Раскладывает дерево по файлам и пишет на диск (только изменившиеся файлы, лишние в Scene/ и Scripts/ удаляются).
+    /// Splits дополняется автоматическими выносами — после вызова сохрани его в place.json.
+    /// ScriptExt — расширение НОВЫХ скриптов (luau/lua); у существующих путь @src сохраняется как есть.
+    /// InlineLines — до скольких строк новый скрипт остаётся @code (0 = всегда в файл).
+    public static void WriteScene(string PlaceDir, List<BridgeNode> Roots, Dictionary<string, string> Splits, int AutoSplitLines, List<string> Warnings,
+                                  string ScriptExt = DefaultScriptExt, int InlineLines = DefaultInlineLines){
+        string Root = Path.GetFullPath(PlaceDir);
+        __SortTree(Roots);
+
+        string Ext = (ScriptExt ?? "").Trim().TrimStart('.').ToLowerInvariant();
+        if(Ext != "lua" && Ext != "luau"){
+            if(Ext.Length > 0){ Warnings.Add($"place.json: ScriptExt «{ScriptExt}» не подходит (нужно luau или lua), использую {DefaultScriptExt}"); }
+            Ext = DefaultScriptExt;
+        }
+
+        WriteCtx Ctx = new(){
+            Root = Root, Project = ProjectRoot(Root), ScriptExt = Ext, InlineLines = InlineLines,
+            Splits = Splits, Warnings = Warnings, Old = __ReadOld(Root)
+        };
+
+        __Measure(Roots, "", Splits, AutoSplitLines, true);
+
+        string[] RootPaths = __SiblingPaths(Roots, "");
+        var RootFiles = new (string Rel, string Full)[Roots.Count];
+
+        for(int I = 0; I < Roots.Count; I++){
+            RootFiles[I] = __Reserve(Ctx, null, $"{SceneDir}/{__FileSeg(Roots[I].Name)}.bridge", Roots[I].Name);
+        }
+
+        for(int I = 0; I < Roots.Count; I++){
+            BridgeNode Clone = __Emit(Roots[I], RootPaths[I], Ctx);
+            Ctx.Files[RootFiles[I].Full] = Write([Clone]);
+        }
+
+        foreach(string K in Splits.Keys){
+            if(!Ctx.Seen.Contains(K)){ Warnings.Add($"Splits: объект «{K}» не найден (переименован или удалён?)"); }
+        }
+
+        foreach(var (Full, Text) in Ctx.Files){ __WriteIfChanged(Full, Text); }
+
+        HashSet<string> Keep = new(StringComparer.OrdinalIgnoreCase);
+        foreach(string Full in Ctx.Files.Keys){
+            string Rel = Path.GetRelativePath(Root, Full).Replace('\\', '/');
+            if(!Rel.StartsWith("..") && !Path.IsPathRooted(Rel)){ Keep.Add(Rel); } // файлы вне плейса не чистим
+        }
+
+        __Clean(Root, SceneDir,   [".bridge"],          Keep);
+        __Clean(Root, ScriptsDir, [".luau", ".lua"],    Keep);
+    }
+
+    /// Что сейчас лежит на диске (только пути @src и признак @code, без чтения скриптов).
+    private static Dictionary<string, BridgeNode> __ReadOld(string Root){
+        try{
+            List<BridgeNode> Old = ReadScene(Root, [], null, true);
+            __SortTree(Old);
+            return Index(Old);
+        }catch{
+            return [];
+        }
+    }
+
+    /// Резервирует файл. Wanted — путь, который уже был у объекта (сохраняется как написан).
+    /// Если он недопустим или занят другим объектом — берётся Default (с «~2», если надо).
+    private static (string Rel, string Full) __Reserve(WriteCtx Ctx, string? Wanted, string Default, string Owner){
+        if(Wanted != null){
+            string? Full = ResolvePath(Ctx.Root, Wanted, out _);
+
+            if(Full != null && !Ctx.Files.ContainsKey(Full)){
+                Ctx.Files[Full] = "";
+
+                if(!IsInside(Ctx.Project, Full)){ Ctx.Warnings.Add($"{Owner}: файл вне проекта: {Wanted}"); }
+                return (Wanted, Full);
+            }
+
+            Ctx.Warnings.Add(Full == null
+                ? $"{Owner}: недопустимый путь «{Wanted}», использую стандартное имя"
+                : $"{Owner}: файл «{Wanted}» уже занят другим объектом, использую стандартное имя");
+        }
+
+        string Ext  = Path.GetExtension(Default);
+        string Stem = Default.Substring(0, Default.Length - Ext.Length);
+        string R    = Default;
+        int    K    = 2;
+
+        while(true){
+            string F = Path.GetFullPath(Path.Combine(Ctx.Root, R)).Replace('\\', '/');
+
+            if(!Ctx.Files.ContainsKey(F)){
+                Ctx.Files[F] = "";
+                return (R, F);
+            }
+
+            R = $"{Stem}~{K++}{Ext}";
+        }
+    }
+
+    private static bool __IsSceneTop(string Root, string Full){
+        string Scene = Path.GetFullPath(Path.Combine(Root, SceneDir)).Replace('\\', '/').TrimEnd('/');
+        string Dir   = (Path.GetDirectoryName(Full) ?? "").Replace('\\', '/').TrimEnd('/');
+        return string.Equals(Scene, Dir, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static BridgeNode __Emit(BridgeNode N, string NodePath, WriteCtx Ctx){
+        Ctx.Seen.Add(NodePath);
+
+        BridgeNode C = new(){ Class = N.Class, Name = N.Name, Tags = N.Tags, Attrs = N.Attrs, Props = [..N.Props] };
+
+        BridgeProp? Src = N.Get("Source");
+        if(Src != null && Src.Kind == BridgeKind.Str){
+            Ctx.Old.TryGetValue(NodePath, out BridgeNode? Old);
+
+            string? Wanted = Old?.SrcPath;   // уже был файл — путь не трогаем
+            bool    Inline = false;
+
+            if(Wanted == null){
+                Inline = FitsInline(Src.Value, Ctx.InlineLines);
+
+                if(!Inline && Old != null && Old.WasCode){
+                    Ctx.Warnings.Add($"{NodePath}: скрипт больше не помещается в @code, вынесен в файл");
+                }
+            }
+
+            C.Props.RemoveAll(P => P.Key == "Source");
+
+            if(Inline){
+                C.AtCode = Src.Value;
+            }else{
+                var (Rel, Full) = __Reserve(Ctx, Wanted, $"{ScriptsDir}/{__FileSegs(NodePath)}.{Ctx.ScriptExt}", NodePath);
+
+                Ctx.Files[Full] = Src.Value;
+                C.AtSrc = Rel;
+            }
+        }
+
+        List<BridgeNode> Kids  = [];
+        string[]         Paths = __SiblingPaths(N.Children, NodePath);
+
+        for(int I = 0; I < N.Children.Count; I++){ Kids.Add(__Emit(N.Children[I], Paths[I], Ctx)); }
+
+        if(Ctx.Splits.TryGetValue(NodePath, out string? Target) && Kids.Count > 0){
+            string? Check = ResolvePath(Ctx.Root, Target, out _);
+            bool    Ok    = Check != null && Check.EndsWith(".bridge", StringComparison.OrdinalIgnoreCase) && !__IsSceneTop(Ctx.Root, Check);
+
+            if(!Ok){
+                Ctx.Warnings.Add($"Splits: «{Target}» для {NodePath} — нужен путь к файлу .bridge (не прямо в Scene/). Использую стандартное имя.");
+                Target = __DefaultFile(NodePath);
+                Ctx.Splits[NodePath] = Target;
+            }
+
+            var (FileRel, FileFull) = __Reserve(Ctx, Target, __DefaultFile(NodePath), NodePath);
+            if(FileRel != Target){ Ctx.Splits[NodePath] = FileRel; }
+
+            Ctx.Files[FileFull] = Write(Kids);
+            C.AtFile = FileRel;
+        }else{
+            C.Children = Kids;
+        }
+
+        return C;
+    }
+
+    private static void __Clean(string Root, string Dir, string[] Exts, HashSet<string> Keep){
         string D = Path.Combine(Root, Dir);
         if(!Directory.Exists(D)){ return; }
 
         foreach(string F in Directory.EnumerateFiles(D, "*", SearchOption.AllDirectories)){
-            if(!F.EndsWith(Ext, StringComparison.OrdinalIgnoreCase)){ continue; }
+            if(!Exts.Any(E => F.EndsWith(E, StringComparison.OrdinalIgnoreCase))){ continue; }
 
             string Rel = Path.GetRelativePath(Root, F).Replace('\\', '/');
             if(!Keep.Contains(Rel)){ File.Delete(F); }
@@ -634,8 +719,9 @@ public static class Bridge{
     // ======================================================================
     // Чтение сцены с диска
 
-    /// Читает Scene/*.bridge (по файлу на сервис), подтягивает @file и @src. Ошибки и замечания — в Problems.
-    public static List<BridgeNode> ReadScene(string PlaceDir, List<string> Problems){
+       /// Читает Scene/*.bridge (по файлу на сервис), подтягивает @file и @src (пути относительные или полные).
+    /// Warnings (необязательно) — замечания вроде «файл вне проекта». Light — не читать тексты скриптов.
+    public static List<BridgeNode> ReadScene(string PlaceDir, List<string> Problems, List<string>? Warnings = null, bool Light = false){
         string Root  = Path.GetFullPath(PlaceDir);
         string Scene = Path.Combine(Root, SceneDir);
 
@@ -649,7 +735,7 @@ public static class Bridge{
             Visited.Add(Rel);
 
             List<BridgeNode> Part = Parse(File.ReadAllText(F), Rel, Problems);
-            __Resolve(Part, Root, Visited, Problems);
+            __Resolve(Part, Root, Visited, Problems, Warnings, Light);
             Roots.AddRange(Part);
         }
 
@@ -661,41 +747,97 @@ public static class Bridge{
         return Roots;
     }
 
-    private static void __Resolve(List<BridgeNode> L, string Root, HashSet<string> Visited, List<string> Problems){
+    private static void __Resolve(List<BridgeNode> L, string Root, HashSet<string> Visited, List<string> Problems, List<string>? Warnings, bool Light){
+        string Project = ProjectRoot(Root);
+
         foreach(BridgeNode N in L){
             if(N.AtSrc != null){
-                string? Full = __Safe(Root, N.AtSrc);
+                N.SrcPath = N.AtSrc;
+                string? Full = ResolvePath(Root, N.AtSrc, out string Err);
 
-                if(Full == null){            Problems.Add($"{N.Origin}: недопустимый путь @src \"{N.AtSrc}\""); }
-                else if(!File.Exists(Full)){ Problems.Add($"{N.Origin}: файл @src не найден: {N.AtSrc}"); }
+                if(Full == null){ Problems.Add($"{N.Origin}: {Err} (@src)"); }
                 else{
-                    N.Props.RemoveAll(X => X.Key == "Source");
-                    N.Props.Add(new BridgeProp("Source", File.ReadAllText(Full), BridgeKind.Str));
+                    if(Warnings != null && !IsInside(Project, Full)){ Warnings.Add($"{N.Origin}: файл вне проекта: {N.AtSrc}"); }
+
+                    if(!Light){
+                        if(!File.Exists(Full)){ Problems.Add($"{N.Origin}: файл @src не найден: {N.AtSrc}"); }
+                        else{
+                            N.Props.RemoveAll(X => X.Key == "Source");
+                            N.Props.Add(new BridgeProp("Source", File.ReadAllText(Full), BridgeKind.Str));
+                        }
+                    }
                 }
 
                 N.AtSrc = null;
             }
 
-            __Resolve(N.Children, Root, Visited, Problems); // дети, написанные в скобках
+            __Resolve(N.Children, Root, Visited, Problems, Warnings, Light); // дети, написанные в скобках
 
             if(N.AtFile != null){
-                string? Full = __Safe(Root, N.AtFile);
+                string? Full = ResolvePath(Root, N.AtFile, out string Err);
 
-                if(Full == null){            Problems.Add($"{N.Origin}: недопустимый путь @file \"{N.AtFile}\""); }
+                if(Full == null){            Problems.Add($"{N.Origin}: {Err} (@file)"); }
                 else if(!File.Exists(Full)){ Problems.Add($"{N.Origin}: файл @file не найден: {N.AtFile}"); }
                 else if(!Visited.Add(Path.GetRelativePath(Root, Full).Replace('\\', '/'))){
                     Problems.Add($"{N.Origin}: файл {N.AtFile} подключён повторно (цикл или дубль)");
                 }else{
+                    if(Warnings != null && !IsInside(Project, Full)){ Warnings.Add($"{N.Origin}: файл вне проекта: {N.AtFile}"); }
                     if(N.Children.Count > 0){ Problems.Add($"{N.Origin}: у объекта и «{{ }}», и @file — оставьте одно"); }
 
                     List<BridgeNode> Kids = Parse(File.ReadAllText(Full), N.AtFile, Problems);
-                    __Resolve(Kids, Root, Visited, Problems);
+                    __Resolve(Kids, Root, Visited, Problems, Warnings, Light);
                     N.Children.AddRange(Kids);
                 }
 
                 N.AtFile = null;
             }
         }
+    }
+
+    /// Путь: относительный (от BaseDir, можно ../) или полный. Всегда возвращает полный путь с «/».
+    public static string? ResolvePath(string BaseDir, string Raw, out string Error){
+        Error = "";
+        string P = Raw.Trim().Replace('\\', '/');
+        if(P == ""){ Error = "пустой путь"; return null; }
+
+        try{
+            string Full = Path.IsPathRooted(P) ? P : Path.Combine(BaseDir, P);
+            return Path.GetFullPath(Full).Replace('\\', '/');
+        }catch{
+            Error = "недопустимый путь: " + Raw;
+            return null;
+        }
+    }
+
+    public static bool IsInside(string Dir, string Full){
+        string D = Path.GetFullPath(Dir).Replace('\\', '/').TrimEnd('/') + "/";
+        return Full.Replace('\\', '/').StartsWith(D, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// Корень проекта по папке плейса (Places/<папка> -> на два уровня выше).
+    public static string ProjectRoot(string PlaceDir) => Path.GetFullPath(Path.Combine(PlaceDir, "..", ".."));
+
+    /// Можно ли записать скрипт как @code без потерь (иначе при Push вечно было бы «~ Source»).
+    public static bool FitsInline(string Text, int MaxLines){
+        if(MaxLines <= 0 || Text.Length > 400 || Text.Contains(">>>")){ return false; }
+        if(Text.Length > 0 && Text[^1] == '\n'){ return false; }
+
+        string[] Lines = Text.Split('\n');
+        if(Lines.Length > MaxLines){ return false; }
+
+        int Min = int.MaxValue;
+
+        foreach(string L in Lines){
+            foreach(char C in L){ if(C < 0x20 && C != '\t'){ return false; } } // в т.ч. \r
+            if(L.Length == 0){ continue; }
+            if(L.Trim().Length == 0){ return false; }
+
+            int N = 0;
+            while(N < L.Length && (L[N] == ' ' || L[N] == '\t')){ N++; }
+            Min = Math.Min(Min, N);
+        }
+
+        return Min == int.MaxValue || Min == 0; // общий отступ при чтении срезался бы
     }
 
     // ======================================================================
@@ -777,30 +919,38 @@ public static class Bridge{
         return N;
     }
 
-    /// _map.txt всегда обновляется, AGENTS.md пишется, если его нет или он от другой версии формата.
+    /// _map.txt всегда обновляется.
     public static void WriteMeta(string PlaceDir, List<BridgeNode> Roots, Dictionary<string, string> Splits){
         __WriteIfChanged(Path.Combine(PlaceDir, "_map.txt"), Map(Roots, Splits));
+    }
+    
+    /// Пишет AGENTS.md в корень проекта (рядом с bridge.json).
+    /// Force=false — только если файла нет. Возвращает true, если файл записан.
+    public static bool WriteAgents(string ProjectDir, bool Force = false){
+        string Full = Path.Combine(ProjectDir, "AGENTS.md");
+        if(!Force && File.Exists(Full)){ return false; }
 
-        string Agents = Path.Combine(PlaceDir, "AGENTS.md");
-        string Marker = $"<!-- bridge-format:{FormatVersion} -->";
-
-        if(!File.Exists(Agents) || File.ReadLines(Agents).FirstOrDefault() != Marker){
-            File.WriteAllText(Agents, Marker + "\n" + AgentsText, __Utf8);
-        }
+        Directory.CreateDirectory(ProjectDir);
+        File.WriteAllText(Full, AgentsText, __Utf8);
+        return true;
     }
 
-public const string AgentsText = """
+    public const string AgentsText = """
 # RobloxBridge: инструкция для ИИ
 
-Эта папка — один плейс Roblox в текстовом формате .bridge. Приложение RobloxBridge переносит его в Studio и обратно кнопками Pull (Studio → файлы) и Push (файлы → Studio). Перед применением пользователь видит diff. Git ведёт пользователь, ты его не трогаешь.
+Эта папка — проект Roblox в текстовом формате .bridge. Приложение RobloxBridge переносит плейсы в Studio и обратно кнопками Pull (Studio → файлы) и Push (файлы → Studio). Перед применением пользователь видит diff. Git ведёт пользователь, ты его не трогаешь.
 
 Главное правило: **файлы — источник истины для синхронизируемых сервисов**. Если удалить объект из .bridge, при Push он удалится в Studio. Не удаляй и не переписывай то, о чём тебя не просили.
 
-## Структура
+## Структура проекта
+- `bridge.json` — описание проекта, список плейсов. Не правь.
+- `Prefabs/<Имя>.bridge` — префабы (шаблоны объектов), общие для всех плейсов.
+- `Places/<папка>/` — один плейс (по умолчанию папка названа по PlaceId). Все пути ниже (`Scene/`, `Scripts/`, `Geometry/`) считаются от этой папки. Работай только с тем плейсом, о котором просят.
+
+## Структура плейса
 - `Scene/<Сервис>.bridge` — по одному файлу на сервис (Workspace, Lighting, ReplicatedStorage, ...).
 - `Scene/<Сервис>/...bridge` — вынесенные поддеревья, подключаются директивой `@file`.
 - `Scripts/<путь объекта>.lua` — тексты скриптов, подключаются директивой `@src`.
-- `Prefabs/<Имя>.bridge` — префабы (шаблоны объектов) на уровне проекта, общие для всех плейсов.
 - `Geometry/<хеш>.bin` — геометрия юнионов. Бинарные файлы, не открывай и не изменяй.
 - `Terrain.voxels` — воксели террейна. Бинарный файл, не трогай.
 - `_map.txt` — обзор дерева (генерируется, не править). `place.json` — настройки (Services, Ignore, Splits, AutoSplit).

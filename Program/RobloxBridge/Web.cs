@@ -73,7 +73,8 @@ aside{ display:flex; flex-direction:column; gap:12px; min-height:0; overflow:aut
 #DumpCard.dump-missing,#DumpCard.dump-broken{ border-left-color:var(--rd); background:#221619; }
 #DumpState{ font-weight:600; margin-bottom:2px; }
 
-#SyncCard .Acts{ display:flex; gap:8px; }
+#SyncCard .Acts, #TerrainCard .Acts{ display:flex; gap:8px; }
+.Act[hidden]{ display:none; }
 .Act{ flex:1; display:flex; flex-direction:column; align-items:flex-start; gap:1px; padding:10px 12px; text-align:left; }
 .Act b{ font-size:14px; font-weight:600; }
 .Act small{ opacity:.7; font-size:11px; }
@@ -154,6 +155,7 @@ button.Act.pull:disabled, button.Act.push:disabled { opacity: .45; }
                     <button id="BtnOpen" class="primary">📂 Открыть проект</button>
                     <button id="BtnClose" class="danger" hidden>Закрыть проект</button>
                 </div>
+                <div style="margin-top:8px"><button id="BtnAgents" style="width:100%">📄 Создать AGENTS.md</button></div>
             </section>
 
             <section class="Card" id="DumpCard">
@@ -179,6 +181,19 @@ button.Act.pull:disabled, button.Act.push:disabled { opacity: .45; }
                 </div>
                 <label class="Auto"><input type="checkbox" id="AutoApply"> Применять сразу после проверки (без второго клика)</label>
                 <div id="SyncHint" class="Hint"></div>
+            </section>
+            
+            <section class="Card" id="TerrainCard">
+                <div class="Title">Террейн</div>
+                <div class="Acts">
+                    <button id="BtnTPull" class="Act pull"><b>Studio → файл</b><small>Террейн · сохранить</small></button>
+                    <button id="BtnTPush" class="Act push"><b>Файл → Studio</b><small>Террейн · предпросмотр</small></button>
+                </div>
+                <div class="Acts" style="margin-top:8px">
+                    <button id="BtnTApply" class="Act" hidden><b>✔ Применить террейн</b><small>после предпросмотра</small></button>
+                    <button id="BtnTUndo" class="Act" hidden><b>↩ Отменить террейн</b><small>последнее применение</small></button>
+                </div>
+                <div class="Hint">Область задаётся в плагине (карточка «Террейн»). Перед применением сохраните плейс. Push террейна всегда с предпросмотром.</div>
             </section>
 
             <section class="Card Fill">
@@ -285,6 +300,7 @@ const H = {
     Error(D){ showError(D.Title || 'Ошибка', D.Details || ''); },
 
     SyncResult(D){
+        S.tApply = !!D.tApply; S.tUndo = !!D.tUndo; renderTerrain();
         S.sync = {
             text:     D.text || '',
             kind:     String(D.kind || ''),
@@ -570,6 +586,16 @@ $('BtnOpen').onclick  = () => send('OpenProject');
 $('BtnClose').onclick = () => send('CloseProject');
 $('DumpPick').onclick = () => send('PickDump');
 $('DumpGit').onclick  = () => send('OpenDumpPage');
+$('BtnAgents').onclick = () => send('Agents');
+
+function renderTerrain(){
+    $('BtnTApply').hidden = !S.tApply;
+    $('BtnTUndo').hidden  = !S.tUndo;
+}
+$('BtnTPull').onclick  = () => cmd('terrain-pull');
+$('BtnTPush').onclick  = () => cmd('terrain-push');
+$('BtnTApply').onclick = () => cmd('terrain-apply');
+$('BtnTUndo').onclick  = () => cmd('terrain-undo');
 
 $('BtnPull').onclick  = doPull;
 $('BtnPush').onclick  = doPush;

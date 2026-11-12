@@ -21,19 +21,6 @@ StarterPlayer "StarterPlayer"  [Scene/StarterPlayer.bridge]
 Teams "Teams"  [Scene/Teams.bridge]
 Workspace "Workspace"  [Scene/Workspace.bridge]
   Part "Baseplate"
-  Folder "ClassTest"
-    Folder "Adornees"  (+10)
-    Folder "Attrs"  (+3)
-    Folder "Constraints"  (+12)
-    Folder "Curves"  (+16)
-    Folder "Effects"  (+10)
-    Folder "Gui"  (+12)
-    Folder "Joints"  (+7)
-    Folder "Misc"  (+11)
-    Folder "PartTypes"  (+12)
-    Folder "Values"  (+14)
   SpawnLocation "SpawnLocation"
     Decal "Decal"
   Terrain "Terrain"
-  UnionOperation "UnionOperation"
-  UnionOperation "UnionOperation"

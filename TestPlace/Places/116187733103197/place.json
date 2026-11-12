@@ -19,12 +19,7 @@
     "Workspace/Camera"
   ],
   "AutoSplit": 0,
-  "Splits": {
-    "Workspace/Test Lobby/Rubber Duck": "Scene/Workspace/Test Lobby/Rubber Duck.bridge",
-    "Workspace/Test Lobby/Materials Station": "Scene/Workspace/Test Lobby/Materials Station.bridge",
-    "Workspace/Test Lobby/Light Station": "Scene/Workspace/Test Lobby/Light Station.bridge",
-    "Workspace/Test Lobby/Shapes Station": "Scene/Workspace/Test Lobby/Shapes Station.bridge",
-    "Workspace/Test Lobby/Spiral Stairs": "Scene/Workspace/Test Lobby/Spiral Stairs.bridge",
-    "Workspace/Test Lobby/Welcome Sign": "Scene/Workspace/Test Lobby/Welcome Sign.bridge"
-  }
+  "ScriptExt": "luau",
+  "InlineLines": 8,
+  "Splits": {}
 }

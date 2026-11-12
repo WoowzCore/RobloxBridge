@@ -1,0 +1,34 @@
+Folder "Checkpoints" {
+    Part "Checkpoint1" Size=16,1,10 Color=#2ECC71 CFrame=0,3.5,14 Anchored #"Checkpoint" $Stage=1
+    Part "Checkpoint2" Size=16,1,10 Color=#2ECC71 CFrame=0,3.5,50 Anchored #"Checkpoint" $Stage=2
+    Part "Checkpoint3" Size=16,1,10 Color=#2ECC71 CFrame=0,3.5,86 Anchored #"Checkpoint" $Stage=3
+    Part "Checkpoint4" Size=16,1,10 Color=#2ECC71 CFrame=0,3.5,122 Anchored #"Checkpoint" $Stage=4
+    Part "Checkpoint5" Size=16,1,10 Color=#2ECC71 CFrame=0,3.5,158 Anchored #"Checkpoint" $Stage=5
+    Part "Finish" Size=16,1,10 Color=#FFD700 Material=Neon CFrame=0,3.5,194 Anchored #"Checkpoint" $Stage=6
+}
+Folder "Stage1_Jumps" {
+    Part "Step1" Size=6,1,6 Color=#3F8EFC CFrame=-6,3.5,25 Anchored
+    Part "Step2" Size=6,1,6 Color=#3F8EFC CFrame=6,3.5,32 Anchored
+    Part "Step3" Size=6,1,6 Color=#3F8EFC CFrame=-6,3.5,39 Anchored
+}
+Folder "Stage2_Movers" {
+    Part "Mover1" Size=8,1,6 Color=#9B5DE5 CFrame=-10,3.5,62 Anchored #"Mover" $Offset=20,0,0 $Time=3
+    Part "Mover2" Size=8,1,6 Color=#9B5DE5 CFrame=10,3.5,73 Anchored #"Mover" $Offset=-20,0,0 $Time=3
+}
+Folder "Stage3_Bricks" {
+    Part "Beam" Size=4,1,20 Color=#555555 CFrame=0,3.5,104 Anchored
+    Part "KillBrick1" Size=4,2,2 Color=#FF0000 CFrame=0,5,99 Anchored #"Kill"
+    Part "KillBrick2" Size=4,2,2 Color=#FF0000 CFrame=0,5,105 Anchored #"Kill"
+    Part "KillBrick3" Size=4,2,2 Color=#FF0000 CFrame=0,5,110 Anchored #"Kill"
+}
+Folder "Stage4_Spinner" {
+    Part "Platform" Size=12,1,14 Color=#F15BB5 CFrame=0,3.5,140 Anchored
+    Part "Spinner" Size=12,2,1 Color=#E63946 CFrame=0,5,140 Anchored #"Kill" #"Spinner" $Speed=100
+}
+Folder "Stage5_Climb" {
+    Part "StepA" Size=6,1,6 Color=#FEE440 CFrame=0,5.5,169 Anchored
+    Part "Elevator" Size=6,1,6 Color=#FB8500 CFrame=0,5.5,178 Anchored #"Mover" $Offset=0,6,0 $Time=2.5
+    Part "StepC" Size=6,1,4 Color=#FEE440 CFrame=0,11.5,185 Anchored
+}
+Part "Lava" Size=100,1,210 Color=#FF4500 Material=Neon CFrame=0,0.5,110 Anchored #"Kill"
+Script "ObbyScript" @src="Scripts/Workspace/Obby/ObbyScript.lua"
