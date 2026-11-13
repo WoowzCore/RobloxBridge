@@ -655,7 +655,10 @@ public static class Pull{
         if(Root.TryGetProperty("services", out JsonElement Svc) && Svc.ValueKind == JsonValueKind.Object){
             foreach(JsonProperty P in Svc.EnumerateObject()){
                 if(!Place.Services.Contains(P.Name)){ continue; }
-                Res.Add(__Node(P.Value, ref N));
+                BridgeNode Root__ = __Node(P.Value, ref N);
+                Root__.Title = Root__.Name;   // имя в Studio («RS»)
+                Root__.Name  = P.Name;        // ключ сервиса («ReplicatedStorage»)
+                Res.Add(Root__);
             }
         }
         Count = N;
@@ -663,7 +666,7 @@ public static class Pull{
     }
 
     public static SyncReply Run(string PlaceDir, PlaceData Place, JsonObject Req){
-        using JsonDocument Doc = JsonDocument.Parse(Req.ToJsonString());
+        using JsonDocument Doc = JsonDocument.Parse(Req.ToJsonString(), new JsonDocumentOptions{ MaxDepth = 1000 });
         JsonElement Root = Doc.RootElement;
         List<BridgeNode> Fresh = ReadStudio(Root, Place, out int Count);
         if(Fresh.Count == 0){ throw new InvalidOperationException("Присланные сервисы не входят в Services (place.json)"); }
@@ -732,6 +735,9 @@ public static class Pull{
         BridgeNode Node = new(){ Class = __Str(E, "c"), Name = __Str(E, "n") };
         Node.Props = __Props(E, "p");
         Node.Attrs = __Props(E, "a");
+        
+        // рабочая камера Studio двигается при каждом движении по вьюпорту — CFrame/Focus дали бы вечные «~»
+        if(Node.Class == "Camera"){ Node.Props.RemoveAll(P => P.Key == "CFrame" || P.Key == "Focus"); }
 
         List<string> Tags = [];
         if(E.TryGetProperty("g", out JsonElement G) && G.ValueKind == JsonValueKind.Array){
@@ -798,7 +804,7 @@ public static class Pull{
 
 public static class Push{
     public static SyncReply Run(string PlaceDir, PlaceData Place, JsonObject Req){
-        using JsonDocument Doc = JsonDocument.Parse(Req.ToJsonString());
+        using JsonDocument Doc = JsonDocument.Parse(Req.ToJsonString(), new JsonDocumentOptions{ MaxDepth = 1000 });
         List<BridgeNode> Studio = Pull.ReadStudio(Doc.RootElement, Place, out int _);
 
         List<string> Prob = [];
@@ -981,13 +987,13 @@ public static class Sync{
 
             __Resolve(Req, out string PlaceDir, out PlaceData Place);
             if(Route == "/config"){
-                Reply(Res, 200, new{ services = Place.Services, ignore = Place.Ignore, splits = Place.Splits });
+                Reply(Res, 200, new{ services = Place.Services, ignore = Place.Ignore, splits = Place.Splits, nest = true });
                 return true;
             }
             
             if(Route == "/terrain/put" || Route == "/terrain/get" || Route == "/terrain/info"){
                 lock(__Lock){
-                    Reply(Res, 200, __Terrain(Route, Req, Body, PlaceDir));
+                    Reply(Res, 200, __Terrain(Route, Req, Body, PlaceDir, Place));
                 }
                 return true;
             }
@@ -1056,8 +1062,9 @@ public static class Sync{
     private static StringBuilder? __TBuf;
 
     // Террейн: сервер только хранит байты, формат знает плагин
-    private static object __Terrain(string Route, HttpListenerRequest Req, string Body, string PlaceDir){
-        string Target = Path.Combine(PlaceDir, "Terrain.voxels");
+    private static object __Terrain(string Route, HttpListenerRequest Req, string Body, string PlaceDir, PlaceData Place){
+        string Rel    = string.IsNullOrWhiteSpace(Place.TerrainFile) ? "Terrain.voxels" : Place.TerrainFile.Trim();
+        string Target = Bridge.ResolvePath(PlaceDir, Rel, out _) ?? throw new InvalidOperationException($"TerrainFile: недопустимый путь «{Rel}»");
 
         if(Route == "/terrain/info"){
             FileInfo I = new(Target);
@@ -1066,7 +1073,7 @@ public static class Sync{
         }
 
         if(Route == "/terrain/get"){
-            if(!File.Exists(Target)){ throw new InvalidOperationException("Файла Terrain.voxels нет. Сначала «Террейн: Pull»."); }
+            if(!File.Exists(Target)){ throw new InvalidOperationException($"Файла {Rel} нет. Сначала «Террейн: Pull»."); }
             string B64   = Convert.ToBase64String(File.ReadAllBytes(Target));
             int    Parts = Math.Max(1, (B64.Length + __TerrainPart - 1) / __TerrainPart);
             int    Part  = __Int(Req, "part", 1);
@@ -1086,23 +1093,24 @@ public static class Sync{
 
         byte[] Bytes = Convert.FromBase64String(__TBuf.ToString());
         __TBuf = null;
+        Directory.CreateDirectory(Path.GetDirectoryName(Target)!);
         string Tmp = Target + ".tmp";
         File.WriteAllBytes(Tmp, Bytes);
         File.Move(Tmp, Target, true);
-        Log?.Invoke($"Террейн: записано {Bytes.Length / 1024} КБ → Terrain.voxels", "Info");
+        Log?.Invoke($"Террейн: записано {Bytes.Length / 1024} КБ → {Rel}", "Info");
         return new{ status = "ok", size = Bytes.Length };
     }
     
         private static readonly Regex __GeoName = new("^[0-9a-f]{16}$");
 
-    // Геометрия юнионов: Geometry/<хеш>.bin. Сервер хранит байты как прислал плагин (Zstd), формат знает плагин.
+    // Геометрия юнионов: Geometry/<хеш>.union. Сервер хранит байты как прислал плагин (Zstd), формат знает плагин.
     private static object __Geo(string Route, string Body, string PlaceDir){
         string Dir = Path.Combine(PlaceDir, "Geometry");
 
         if(Route == "/geo/list"){
             List<string> Have = [];
             if(Directory.Exists(Dir)){
-                foreach(string F in Directory.EnumerateFiles(Dir, "*.bin")){
+                foreach(string F in Directory.EnumerateFiles(Dir, "*.union")){
                     string H = Path.GetFileNameWithoutExtension(F);
                     if(__GeoName.IsMatch(H)){ Have.Add(H); }
                 }
@@ -1120,7 +1128,7 @@ public static class Sync{
                 string D = (string?)Item?["d"] ?? "";
                 if(!__GeoName.IsMatch(H)){ throw new InvalidOperationException("Геометрия: недопустимый хеш «" + H + "»"); }
 
-                string Target = Path.Combine(Dir, H + ".bin");
+                string Target = Path.Combine(Dir, H + ".union");
                 if(File.Exists(Target)){ continue; }   // тот же хеш = та же геометрия
 
                 byte[] Bytes;
@@ -1144,7 +1152,7 @@ public static class Sync{
             string H = (string?)X ?? "";
             if(!__GeoName.IsMatch(H)){ throw new InvalidOperationException("Геометрия: недопустимый хеш «" + H + "»"); }
 
-            string Target = Path.Combine(Dir, H + ".bin");
+            string Target = Path.Combine(Dir, H + ".union");
             if(File.Exists(Target)){ Items.Add(new{ h = H, d = Convert.ToBase64String(File.ReadAllBytes(Target)) }); }
             else{ Missing.Add(H); }
         }
@@ -1181,6 +1189,12 @@ public static class Sync{
             if(V < 0 || V > 200){ throw new InvalidOperationException("InlineLines: целое число от 0 до 200"); }
             if(V != Place.InlineLines){ Changes.Add($"InlineLines {Place.InlineLines} → {V}"); Place.InlineLines = V; }
         }
+        if(J?["terrainFile"] != null){
+            string V = ((string?)J["terrainFile"] ?? "").Trim();
+            if(V.Length == 0){ V = "Terrain.voxels"; }
+            if(Bridge.ResolvePath(PlaceDir, V, out _) == null){ throw new InvalidOperationException("TerrainFile: недопустимый путь"); }
+            if(V != Place.TerrainFile){ Changes.Add($"TerrainFile {Place.TerrainFile} → {V}"); Place.TerrainFile = V; }
+        }
         if(J?["services"] != null){
             List<string> S = __Lines(J["services"]);
             if(S.Count == 0){ throw new InvalidOperationException("Services не может быть пустым"); }
@@ -1204,7 +1218,7 @@ public static class Sync{
         }).ToList();
         return new{
             status = "ok", text = Text, placeId = Place.PlaceId, created = Place.Created,
-            autoSplit = Place.AutoSplit, scriptExt = Place.ScriptExt, inlineLines = Place.InlineLines,
+            autoSplit = Place.AutoSplit, scriptExt = Place.ScriptExt, inlineLines = Place.InlineLines, terrainFile = Place.TerrainFile,
             services = Place.Services, ignore = Place.Ignore, splits = Splits
         };
     }
@@ -1248,34 +1262,79 @@ public static class Sync{
         Place = File.Exists(PlaceFile) ? JsonSerializer.Deserialize<PlaceData>(File.ReadAllText(PlaceFile), Pull.Json) ?? new PlaceData() : new PlaceData();
     }
 
-    // Склеивает части запроса (плагин режет большие сервисы). null - пока пришли не все части.
+        private static int __LastPart = 0;
+    private static readonly JsonDocumentOptions __Deep = new(){ MaxDepth = 1000 };   // по умолчанию 64 — это всего ~30 уровней вложенности объектов
+
+    // Склеивает части запроса (плагин режет большие сервисы и большие объекты). null - пока пришли не все части.
+    // Узел с "m": true - продолжение ПОСЛЕДНЕГО ребёнка с тем же классом и именем (рекурсивно).
     private static JsonObject? __Join(string Session, int Part, int Parts, string Body){
-        JsonObject Cur = JsonNode.Parse(Body) as JsonObject ?? throw new InvalidOperationException("Тело запроса не JSON-объект");
-        if(Part <= 1 || Session != __Session || __Acc == null){
-            __Session = Session;
-            __Acc = new JsonObject{ ["services"] = new JsonObject() };
+        JsonObject Cur = JsonNode.Parse(Body, null, __Deep) as JsonObject ?? throw new InvalidOperationException("Тело запроса не JSON-объект");
+
+        if(Part <= 1){
+            __Session  = Session;
+            __Acc      = new JsonObject{ ["services"] = new JsonObject() };
+            __LastPart = 0;
+        }else if(__Acc == null || Session != __Session || Part != __LastPart + 1){
+            __Acc = null;
+            throw new InvalidOperationException($"Пакет {Part} из {Parts} пришёл не по порядку (последний принятый: {__LastPart}). Данные не обработаны, повторите операцию.");
         }
+        __LastPart = Part;
+
         JsonObject Acc = __Acc;
         JsonObject Svc = (JsonObject)Acc["services"]!;
+
         if(Cur["services"] is JsonObject In){
             foreach(KeyValuePair<string, JsonNode?> P in In.ToList()){
-                if(P.Value == null){ continue; }
+                if(P.Value is not JsonObject Node){ continue; }
                 In.Remove(P.Key);
-                if(Svc[P.Key] is JsonObject Have && Have["k"] is JsonArray HaveKids && P.Value["k"] is JsonArray NewKids){
-                    foreach(JsonNode? Kid in NewKids.ToList()){ NewKids.Remove(Kid); HaveKids.Add(Kid); }
-                }else{
-                    Svc[P.Key] = P.Value;
-                }
+
+                if(Svc[P.Key] is JsonObject Have){ __Merge(Have, Node, P.Key); }
+                else{                              Svc[P.Key] = Node; }
             }
         }
+
         foreach(KeyValuePair<string, JsonNode?> P in Cur.ToList()){
             if(P.Key == "services"){ continue; }
             Cur.Remove(P.Key);
             Acc[P.Key] = P.Value;
         }
+
         if(Part < Parts){ return null; }
         __Acc = null;
         return Acc;
+    }
+
+    // Дописывает детей New в Have. Свойства/атрибуты/теги продолжения игнорируются (они были в первом пакете).
+    private static void __Merge(JsonObject Have, JsonObject New, string At){
+        if(New["k"] is not JsonArray NewKids){ return; }
+        if(Have["k"] is not JsonArray HaveKids){
+            HaveKids = new JsonArray();
+            Have["k"] = HaveKids;
+        }
+
+        List<JsonNode?> Items = NewKids.ToList();
+        NewKids.Clear();   // отцепляем, чтобы узлы можно было добавить в другой массив
+
+        foreach(JsonNode? Item in Items){
+            if(Item is not JsonObject Kid){ continue; }
+
+            if(Kid["m"]?.GetValueKind() != JsonValueKind.True){
+                HaveKids.Add(Kid);
+                continue;
+            }
+
+            string C = (string?)Kid["c"] ?? "", N = (string?)Kid["n"] ?? "";
+            JsonObject? Target = null;
+            for(int I = HaveKids.Count - 1; I >= 0; I--){
+                if(HaveKids[I] is JsonObject X && (string?)X["c"] == C && (string?)X["n"] == N){ Target = X; break; }
+            }
+            if(Target == null){
+                __Acc = null;
+                throw new InvalidOperationException($"Деление пакетов: продолжение «{At}/{N}» ({C}) не найдено среди уже полученного. Данные не обработаны.");
+            }
+
+            __Merge(Target, Kid, At + "/" + N);
+        }
     }
 }
 
@@ -1874,6 +1933,8 @@ public sealed class PlaceData{
 
     public string ScriptExt   { get; set; } = "luau";   // расширение НОВЫХ скриптов: luau или lua
     public int    InlineLines { get; set; } = 8;        // новые скрипты до N строк остаются @code (0 = всегда в файл)
+    
+    public string TerrainFile { get; set; } = "Terrain.voxels";   // путь к файлу террейна (от папки плейса или полный)
     
     /// Путь объекта -> файл .bridge (относительно папки плейса). Заполняется и вручную, и автоматически.
     public Dictionary<string, string> Splits { get; set; } = [];

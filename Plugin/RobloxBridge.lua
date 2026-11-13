@@ -447,7 +447,12 @@ do
 		local Req = { Url = Base() .. Path, Method = Body and "POST" or "GET", Headers = { ["Content-Type"] = "application/json" } }
 		if Dbg then Req.Headers["X-Bridge-Debug"] = "1" end
 		local Json
-		if Body then Json = HttpService:JSONEncode(Body); Req.Body = Json end
+		if Body then
+			local OkJ, Res = pcall(HttpService.JSONEncode, HttpService, Body)
+			if not OkJ then return nil, "не удалось упаковать запрос " .. Path .. " в JSON: " .. tostring(Res) end
+			Json = Res
+			Req.Body = Json
+		end
 		local T0 = os.clock()
 		if Dbg then
 			print("[Bridge] → " .. Req.Method .. " " .. Path .. " (" .. (Json and #Json or 0) .. " байт)" .. (Json and ("\n" .. Cut(Json)) or ""))
@@ -470,13 +475,101 @@ do
 		Call("/note" .. Q(), { lines = Lines })
 	end
 
+	-- ===== Прогресс и остановка =====
+	local Prog = { cancel = false, locked = false, label = "", total = 0, done = 0, t0 = 0, st0 = 0,
+		msg = "Остановлено пользователем", nest = false }
+	;(function()
+		local Fr = make("Frame", { LayoutOrder = 7, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY,
+			BackgroundTransparency = 1, Visible = false }, StatusCard)
+		List(Fr, 4)
+		local Lbl = Text(Fr, 1, "", { Size = 13 })
+		local Back = make("Frame", { LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 8), BorderSizePixel = 0,
+			BackgroundColor3 = C.Input }, Fr)
+		Corner(Back, 4)
+		local Bar = make("Frame", { Size = UDim2.new(0, 0, 1, 0), BorderSizePixel = 0, BackgroundColor3 = PullColor }, Back)
+		Corner(Bar, 4)
+		local Sub = Text(Fr, 3, "", { Size = 12, Color = C.Dim })
+		local Stop = Button(Fr, 4, "⏹ Остановить", "normal")
+
+		local function Fmt(S)
+			S = math.floor(S + 0.5)
+			if S < 60 then return S .. " с" end
+			if S < 3600 then return (S // 60) .. " мин " .. (S % 60) .. " с" end
+			return (S // 3600) .. " ч " .. ((S % 3600) // 60) .. " мин"
+		end
+
+		local function Draw()
+			local Total, Done, Now = Prog.total, Prog.done, os.clock()
+			local Head = Prog.label
+			if Total > 0 then
+				Head ..= string.format(": %d / %d (%d%%)", Done, Total, math.min(100, math.floor(Done / Total * 100)))
+				Bar.Size = UDim2.new(math.clamp(Done / Total, 0, 1), 0, 1, 0)
+				Bar.BackgroundTransparency = 0
+			else
+				Bar.Size = UDim2.new(1, 0, 1, 0)
+				Bar.BackgroundTransparency = 0.65
+			end
+			local Info = "Прошло " .. Fmt(Now - Prog.t0)
+			local El = Now - Prog.st0
+			if Total > 0 and Done > 0 and El > 2 then
+				Info ..= " · осталось ~" .. Fmt(El / Done * math.max(0, Total - Done))
+			end
+			Lbl.Text = Head
+			Sub.Text = Info
+			Stop.Visible = not Prog.locked
+		end
+
+		Click(Stop, function()
+			Prog.cancel = true
+			Stop.Text = "Останавливаю…"
+			Enable(Stop, false)
+		end)
+
+		function Prog.Start()
+			Prog.cancel, Prog.locked = false, false
+			Prog.label, Prog.total, Prog.done = "Подготовка", 0, 0
+			Prog.t0 = os.clock()
+			Prog.st0 = Prog.t0
+			Stop.Text = "⏹ Остановить"
+			Enable(Stop, true)
+			Draw()
+			Fr.Visible = true
+		end
+		-- Locked = true: этап нельзя прервать (кнопка скрывается)
+		function Prog.Stage(Label, Total, Locked)
+			if Prog.cancel and not Locked then error(Prog.msg, 0) end
+			Prog.label, Prog.total, Prog.done = Label, Total or 0, 0
+			Prog.locked = Locked == true
+			Prog.st0 = os.clock()
+		end
+		function Prog.Step(Done)
+			Prog.done = Done
+			if Prog.cancel and not Prog.locked then error(Prog.msg, 0) end
+		end
+		function Prog.End() Fr.Visible = false end
+
+		local LastRep = 0
+		task.spawn(function()
+			while true do
+				if Fr.Visible then
+					Draw()
+					if Prog.Hook and os.clock() - LastRep > 1.5 then
+						LastRep = os.clock()
+						Prog.Hook(Lbl.Text .. " · " .. Sub.Text)
+					end
+				end
+				task.wait(0.25)
+			end
+		end)
+	end)()
+
 	-- ===== Схема, значения =====
 	local Schema, SchemaHash
 	local PropCache, DefCache = {}, {}
 
 	local SkipProp = { Name = true, Source = true, UniqueId = true, HistoryId = true, SourceAssetId = true,
 		ScriptGuid = true, Color3uint8 = true, BrickColor = true, InitialSize = true }
-	local Simple = { bool = true, int = true, float = true, double = true, int64 = true, string = true, Content = true,
+	local Simple = { bool = true, int = true, float = true, double = true, int64 = true, string = true, Content = true, ContentId = true,
 		Vector2 = true, Vector3 = true, UDim = true, UDim2 = true, Color3 = true, CFrame = true, Rect = true, NumberRange = true,
 		Ref = true, Font = true, BrickColor = true, NumberSequence = true, ColorSequence = true, Vector3int16 = true,
 		PhysicalProperties = true, Faces = true, Axes = true }
@@ -485,6 +578,7 @@ do
 
 	local function R(X)
 		if X ~= X or X == math.huge or X == -math.huge then return 0 end
+		if math.abs(X) > 1e12 then return X end
 		local V = math.floor(X * 1000 + 0.5) / 1000
 		if V == 0 then return 0 end
 		return V
@@ -495,7 +589,7 @@ do
 		if T == "bool" then return { t = "b", v = V }
 		elseif T == "int" or T == "float" or T == "double" or T == "int64" then return { t = "n", v = R(V) }
 		elseif T == "string" then return { t = "s", v = V }
-		elseif T == "Content" then
+		elseif T == "Content" or T == "ContentId" then
 			local U = V
 			if typeof(V) ~= "string" then U = V.Uri end
 			return { t = "ct", v = U or "" }
@@ -780,6 +874,7 @@ do
 				if not Have[H] then table.insert(Need, H) end
 			end
 			table.sort(Need)
+			if #Need > 0 then Prog.Stage("Загрузка геометрии юнионов", #Need) end
 			local Batch, Size, Sent = {}, 0, 0
 			local function Flush()
 				if #Batch == 0 then return end
@@ -788,7 +883,8 @@ do
 				Sent += #Batch
 				Batch, Size = {}, 0
 			end
-			for _, H in ipairs(Need) do
+			for I, H in ipairs(Need) do
+				Prog.Step(I - 1)
 				local Z = ES:CompressBuffer(Geo.store[H], Enum.CompressionAlgorithm.Zstd, 3)
 				local B64 = buffer.tostring(ES:Base64Encode(Z))
 				if Size + #B64 > 300000 and #Batch > 0 then Flush() end
@@ -809,7 +905,9 @@ do
 			end
 			if #Need == 0 then return end
 			if not Geo.ok then error("SerializationService/EncodingService недоступны в этой Studio", 0) end
+			Prog.Stage("Загрузка геометрии юнионов", #Need)
 			for I = 1, #Need, 20 do
+				Prog.Step(I - 1)
 				local Part = { table.unpack(Need, I, math.min(I + 19, #Need)) }
 				local D, E = Call("/geo/get" .. Q(), { hashes = Part })
 				if E then error(E, 0) end
@@ -838,12 +936,55 @@ do
 	end
 
 	-- ===== Сериализация Studio =====
-	local Counter = 0
+	-- Значения, которые JSON не принимает: nan/inf и строки с неверным UTF-8
+	local function CleanStr(S)
+		if utf8.len(S) then return S, false end
+		local Out, Pos = {}, 1
+		while Pos <= #S do
+			local L, B = utf8.len(S, Pos)
+			if L then table.insert(Out, string.sub(S, Pos)); break end
+			table.insert(Out, string.sub(S, Pos, B - 1))
+			table.insert(Out, "?")
+			Pos = B + 1
+		end
+		return table.concat(Out), true
+	end
+
+	local function Fix(V)
+		local T = type(V)
+		if T == "number" then
+			if V ~= V or V == math.huge or V == -math.huge then return 0, true end
+			return V, false
+		elseif T == "string" then
+			return CleanStr(V)
+		elseif T == "table" then
+			local Changed = false
+			for I, X in ipairs(V) do
+				local Y, Ch = Fix(X)
+				if Ch then V[I] = Y; Changed = true end
+			end
+			return V, Changed
+		end
+		return V, false
+	end
+
+	local Counter, FixWarn = 0, 0
+	local FixKey = "значения исправлены (nan/inf/не UTF-8)"
+	local function Fixed(Skipped, Where)
+		Skipped[FixKey] = (Skipped[FixKey] or 0) + 1
+		FixWarn += 1
+		if FixWarn <= 20 then warn("[Bridge] исправлено значение (nan/inf или неверный UTF-8): " .. Where) end
+	end
+
 	local function Node(Inst, Path, Ign, Skipped)
 		Counter += 1
+		if Counter == 1 then FixWarn = 0 end
+		Prog.Step(Counter)
 		if Counter % 200 == 0 then task.wait() end
 		local Class = Inst.ClassName
-		local N = { c = Class, n = Inst.Name }
+		local Nm, NmBad = CleanStr(Inst.Name)
+		if NmBad then Fixed(Skipped, Path .. " (имя)") end
+		local N = { c = Class, n = Nm }
 		local Info = PropsOf(Class)
 		local Def = DefaultsOf(Class)
 
@@ -852,15 +993,24 @@ do
 			local Ok, V = pcall(GetProp, Inst, E[1])
 			if Ok and V ~= nil then
 				local Ok2, Val = pcall(Enc, E[2], V)
-				if Ok2 and Val and not (Def and Def.sig[E[1]] == Sig(Val)) then
-					P[E[1]] = Val
-					Any = true
+				if Ok2 and Val then
+					local FV, Bad = Fix(Val.v)
+					if Bad then Val.v = FV; Fixed(Skipped, Path .. "." .. E[1]) end
+					if not (Def and Def.sig[E[1]] == Sig(Val)) then
+						P[E[1]] = Val
+						Any = true
+					end
 				end
 			end
 		end
 		if Inst:IsA("LuaSourceContainer") then
 			local Ok, S = pcall(GetProp, Inst, "Source")
-			if Ok then P.Source = { t = "s", v = S }; Any = true end
+			if Ok then
+				local S2, Bad = CleanStr(S)
+				if Bad then Fixed(Skipped, Path .. ".Source") end
+				P.Source = { t = "s", v = S2 }
+				Any = true
+			end
 		end
 		if Any then N.p = P end
 		for _, T in ipairs(Info.unsup) do Skipped[T] = (Skipped[T] or 0) + 1 end
@@ -868,9 +1018,14 @@ do
 		local A, AnyA = {}, false
 		for K, V in pairs(Inst:GetAttributes()) do
 			local E = EncAttr(V)
-			if E then A[K] = E; AnyA = true end
+			if E then
+				local FV, Bad = Fix(E.v)
+				if Bad then E.v = FV; Fixed(Skipped, Path .. " $" .. K) end
+				A[K] = E
+				AnyA = true
+			end
 		end
-		
+
 		if Inst:IsA("PartOperation") then
 			local Ok, H = pcall(Geo.Of, Inst)
 			if Ok and H then
@@ -880,11 +1035,18 @@ do
 				Skipped["юнион без геометрии"] = (Skipped["юнион без геометрии"] or 0) + 1
 			end
 		end
-		
+
 		if AnyA then N.a = A end
 
 		local Tags = Inst:GetTags()
-		if #Tags > 0 then table.sort(Tags); N.g = Tags end
+		if #Tags > 0 then
+			for I, T in ipairs(Tags) do
+				local T2, Bad = CleanStr(T)
+				if Bad then Tags[I] = T2; Fixed(Skipped, Path .. " #тег") end
+			end
+			table.sort(Tags)
+			N.g = Tags
+		end
 
 		local Out = {}
 		for _, K in ipairs(Kids(Inst, Path)) do
@@ -900,10 +1062,21 @@ do
 		local Ign = {}
 		for _, P in ipairs(Cfg.ignore or {}) do Ign[P] = true end
 		RefCfg, Rev, RefIgn = Cfg, nil, Ign
+		local Total = 0
+		for _, Name in ipairs(Cfg.services or {}) do
+			local S = game:FindService(Name)
+			if S then Total += #S:GetDescendants() + 1 end
+		end
+		Prog.Stage("Чтение сцены", Total)
 		local Svc, Skipped = {}, {}
 		for _, Name in ipairs(Cfg.services or {}) do
 			local S = game:FindService(Name)
 			if S then Svc[Name] = Node(S, Name, Ign, Skipped) end
+		end
+		if DebugOn and Svc.Workspace then
+			for _, K in ipairs(Svc.Workspace.k or {}) do
+				print("[Bridge] Workspace/" .. K.n .. " (" .. K.c .. "), вложенных: " .. (K.k and #K.k or 0))
+			end
 		end
 		return Svc, Skipped
 	end
@@ -912,36 +1085,143 @@ do
 	local SetInfo
 	local function Send(Route, Svc, Skipped, Extra)
 		local Session = HttpService:GenerateGUID(false)
-		local Parts, Names = {}, {}
+		local LIMIT = CHUNK * 0.8   -- запас на оценку размера и «скелет» предков
+		local Self, Tot, Seen = {}, {}, 0
+		local Up = {}
+
+		local function NodePath(N)
+			local P = {}
+			while N do table.insert(P, 1, N.n); N = Up[N] end
+			return table.concat(P, "/")
+		end
+		local function Why(N)
+			for _, Fld in ipairs({ "p", "a" }) do
+				for K, E in pairs(N[Fld] or {}) do
+					if not pcall(HttpService.JSONEncode, HttpService, E) then
+						local Ok, S = pcall(Sig, E)
+						return (Fld == "a" and "атрибут $" or "свойство ") .. K .. " = " .. (Ok and S or "?")
+					end
+				end
+			end
+			return "имя, тег или класс объекта"
+		end
+		local function Measure(N)
+			local Ok, Js = pcall(HttpService.JSONEncode, HttpService, { c = N.c, n = N.n, p = N.p, a = N.a, g = N.g })
+			if not Ok then
+				error("Не удаётся упаковать «" .. NodePath(N) .. "» в JSON: " .. Why(N) .. " (" .. tostring(Js) .. ")", 0)
+			end
+			local Own = #Js + 2
+			local Sum = Own
+			for _, K in ipairs(N.k or {}) do
+				Up[K] = N
+				Sum += Measure(K) + 1
+			end
+			Self[N], Tot[N] = Own, Sum
+			Seen += 1
+			if Seen % 300 == 0 then Prog.Step(Seen); task.wait() end
+			return Sum
+		end
+
+		-- размер узла: собственный JSON (без детей) и всего поддерева
+		Prog.Stage("Подготовка к отправке", Counter)
+		local function Measure(N)
+			local Own = #HttpService:JSONEncode({ c = N.c, n = N.n, p = N.p, a = N.a, g = N.g }) + 2
+			local Sum = Own
+			for _, K in ipairs(N.k or {}) do Sum += Measure(K) + 1 end
+			Self[N], Tot[N] = Own, Sum
+			Seen += 1
+			if Seen % 300 == 0 then Prog.Step(Seen); task.wait() end
+			return Sum
+		end
+
+		local Names = {}
 		for N in pairs(Svc) do table.insert(Names, N) end
 		table.sort(Names)
+
+		local Parts, Used, Stack, SvcName = {}, {}, {}, ""
+		local Cur, CurList, CurDeep, CurSize, Emitted
+
+		local function StackSize()
+			local T = 0
+			for _, S in ipairs(Stack) do
+				T += Used[S] and (60 + #S.n * 2) or (Self[S] + 20)
+			end
+			return T
+		end
+		local function PathText(Nd)
+			local P = {}
+			for _, S in ipairs(Stack) do table.insert(P, S.n) end
+			table.insert(P, Nd.n)
+			return table.concat(P, "/")
+		end
+		local function Flush()
+			if Cur then table.insert(Parts, { [SvcName] = Cur }) end
+			Cur, CurList, CurDeep = nil, nil, nil
+		end
+		-- новый пакет: цепочка предков (в продолжении — с пометкой m)
+		local function Open()
+			CurSize = StackSize()
+			Emitted = true
+			local Prev
+			for I, S in ipairs(Stack) do
+				local Cp = { c = S.c, n = S.n, k = {} }
+				if Used[S] then
+					if I > 1 then Cp.m = true end
+				else
+					Cp.p, Cp.a, Cp.g = S.p, S.a, S.g
+					Used[S] = true
+				end
+				if Prev then table.insert(Prev.k, Cp) else Cur = Cp end
+				Prev = Cp
+			end
+			CurList, CurDeep = Prev.k, Stack[#Stack]
+		end
+
+		local function Place(Nd)
+			local T = Tot[Nd]
+			if T + StackSize() <= LIMIT then
+				if Cur and (CurDeep ~= Stack[#Stack] or CurSize + T > LIMIT) then Flush() end
+				if not Cur then Open() end
+				table.insert(CurList, Nd)
+				CurSize += T + 1
+				return
+			end
+			if not Prog.nest then
+				error("Объект «" .. PathText(Nd) .. "» слишком большой для передачи (> " .. math.floor(LIMIT)
+					.. " байт). Нужна версия приложения с делением больших объектов на пакеты.", 0)
+			end
+			if not Nd.k or #Nd.k == 0 or Self[Nd] + StackSize() > LIMIT then
+				error("Объект «" .. PathText(Nd) .. "» нельзя разделить: он сам (свойства или код скрипта) занимает "
+					.. Self[Nd] .. " байт при лимите пакета " .. math.floor(LIMIT)
+					.. ". Добавьте его в «Игнорировать» или вынесите код скрипта в файл.", 0)
+			end
+			Flush()
+			table.insert(Stack, Nd)
+			for _, K in ipairs(Nd.k) do Place(K) end
+			Flush()
+			table.remove(Stack)
+		end
+
 		for _, N in ipairs(Names) do
 			local S = Svc[N]
-			local Group, Size, First = {}, 0, true
-			local function Flush()
-				local Copy = { c = S.c, n = S.n, k = Group }
-				if First then Copy.p, Copy.a, Copy.g = S.p, S.a, S.g end
-				table.insert(Parts, { [N] = Copy })
-				Group, Size, First = {}, 0, false
-			end
-			for _, K in ipairs(S.k or {}) do
-				local L = #HttpService:JSONEncode(K)
-				if L > CHUNK then error("Объект «" .. tostring(K.n) .. "» в " .. N .. " слишком большой для передачи (> " .. CHUNK .. " байт)", 0) end
-				if Size + L > CHUNK and #Group > 0 then Flush() end
-				table.insert(Group, K)
-				Size += L
-			end
+			SvcName, Stack, Emitted = N, { S }, false
+			Measure(S)
+			for _, K in ipairs(S.k or {}) do Place(K) end
+			if not Emitted then Open() end
 			Flush()
 		end
 
 		local Total, LastResp = #Parts, nil
+		Prog.Stage("Отправка на сервер, пакетов: " .. Total, Total)
 		for I, Body in ipairs(Parts) do
 			local Req = { services = Body }
 			if I == Total then
 				Req.skipped = Skipped
 				for K, V in pairs(Extra or {}) do Req[K] = V end
+				Prog.Stage("Сервер обрабатывает данные", 0, true)
+			else
+				Prog.Step(I - 1)
 			end
-			if Total > 1 then SetInfo("Отправка: часть " .. I .. "/" .. Total) end
 			local D, E = Call(Route .. Q() .. "&session=" .. Session .. "&part=" .. I .. "&parts=" .. Total, Req)
 			if E then return D, E end
 			LastResp = D
@@ -974,7 +1254,7 @@ do
 			error("ожидалось true/false: " .. S, 0)
 		elseif T == "int" or T == "float" or T == "double" or T == "int64" then
 			return tonumber(S) or error("не число: " .. S, 0)
-		elseif T == "string" or T == "Content" then return S
+		elseif T == "string" or T == "Content" or T == "ContentId" then return S
 		elseif string.sub(T, 1, 5) == "Enum:" then
 			local Item = Enum[string.sub(T, 6)]:FromName(S)
 			if not Item then error("нет значения «" .. S .. "» у " .. T, 0) end
@@ -1078,7 +1358,7 @@ do
 					elseif not Geo.ok then
 						table.insert(Out, "x " .. Op.path .. ": SerializationService/EncodingService недоступны, юнион не создастся")
 					elseif Geo.known and not Geo.known[H] then
-						table.insert(Out, "x " .. Op.path .. ": файла Geometry/" .. H .. ".bin нет, юнион не создастся")
+						table.insert(Out, "x " .. Op.path .. ": файла Geometry/" .. H .. ".union нет, юнион не создастся")
 					else
 						CheckProps(Op, Out)
 					end
@@ -1093,8 +1373,8 @@ do
 					table.insert(Out, "! " .. Op.path .. ": геометрия юниона отличается от файла, юнион будет заменён (ссылки на него, например WeldConstraint, потеряются)")
 				end
 			elseif Op.op == "delete" then
-				if Op.class == "Terrain" then
-					table.insert(Out, "x " .. Op.path .. ": Terrain не удаляется")
+				if Op.class == "Terrain" or Op.class == "Camera" then
+					table.insert(Out, "x " .. Op.path .. ": Terrain/Camera не удаляются")
 				end
 			end
 		end
@@ -1224,12 +1504,17 @@ do
 
 	local function ApplyOps(Ops, Cfg)
 		Defer = {}
+		Prog.Stage("Поиск объектов в Studio", 0)
 		local Map = Index(Cfg)
 		local Created, Changed, Deleted, Skipped = 0, 0, 0, 0
 		local Errs, Failed, J = {}, {}, {}
+		Prog.Stage("Применение изменений", #Ops)
+		local TY = os.clock()
 
 		local Ok, Err = pcall(function()
-			for _, Op in ipairs(Ops) do
+			for OpI, Op in ipairs(Ops) do
+				Prog.Step(OpI - 1)
+				if os.clock() - TY > 0.1 then task.wait(); TY = os.clock() end
 				if Op.op == "create" then
 					local ParentPath = string.match(Op.path, "^(.*)/[^/]*$")
 					local Parent = ParentPath and Map[ParentPath]
@@ -1285,8 +1570,8 @@ do
 					local I = Map[Op.path]
 					if not I then
 						table.insert(Errs, Op.path .. ": объект не найден в Studio")
-					elseif Op.class == "Terrain" then
-						table.insert(Errs, Op.path .. ": Terrain не удаляется")
+					elseif Op.class == "Terrain" or Op.class == "Camera" then
+						table.insert(Errs, Op.path .. ": Terrain/Camera не удаляются")
 					else
 						local Par = I.Parent
 						I.Parent = nil   -- не Destroy: нужен для отмены
@@ -1400,6 +1685,8 @@ do
 		LastText, LastColor, LastLines = Str, Color, {}
 		Report()
 	end
+	
+	Prog.Hook = function(Str) SetInfo(Str, Dim()) end
 
 	-- ===== Карточка «Изменения» =====
 	local ChangesCard = Card(Root, 4)
@@ -1479,6 +1766,7 @@ do
 		if not Ok then error("Схема: " .. tostring(E), 0) end
 		local Cfg, E2 = Call("/config" .. Q())
 		if E2 then error(E2, 0) end
+		Prog.nest = Cfg.nest == true
 		return Cfg
 	end
 
@@ -1571,12 +1859,18 @@ do
 		Working = true
 		RefreshButtons()
 		SetInfo(Title .. "…", Dim())
+		Prog.Start()
 		task.spawn(function()
 			local Ok, Err = pcall(Fn)
+			Prog.End()
 			if not Ok then
-				SetInfo("✖ " .. tostring(Err), Red)
-				warn("RobloxBridge: " .. tostring(Err))
-				Note({ "Плагин: " .. tostring(Err) })
+				if tostring(Err) == Prog.msg then
+					SetInfo("⏹ " .. Title .. ": остановлено вами. Файлы сцены и Studio не изменены.", Yellow)
+				else
+					SetInfo("✖ " .. tostring(Err), Red)
+					warn("RobloxBridge: " .. tostring(Err))
+					Note({ "Плагин: " .. tostring(Err) })
+				end
 			end
 			Working = false
 			RefreshButtons()
@@ -1606,7 +1900,7 @@ do
 	-- ===== Объект: информация о выделенном и действия =====
 	-- Путь объекта по тем же правилам, что на сервере (~2 у одинаковых братьев, %2F)
 	local function PathOf(Inst)
-		if Inst.Parent == game then return Inst.Name end
+		if Inst.Parent == game then return Inst.ClassName end
 		if not Inst.Parent then return nil end
 		local PP = PathOf(Inst.Parent)
 		if not PP then return nil end
@@ -1702,7 +1996,7 @@ do
 			return A
 		end
 		if Inst.ClassName == "Terrain" then
-			A.Status, A.Color = "Terrain: сохраняются только свойства", Green
+			A.Status, A.Color = "Terrain: свойства и вложенные объекты (Clouds и др.) синхронизируются", Green
 			return A
 		end
 
@@ -1790,7 +2084,7 @@ do
 			if P == A.Path then Has = true else table.insert(New, P) end
 		end
 		if not Has then table.insert(New, A.Path) end
-		local D, E = Call("/settings" .. Q(), { autoSplit = Data.autoSplit, services = Data.services, ignore = New, scriptExt = Data.scriptExt, inlineLines = Data.inlineLines })
+		local D, E = Call("/settings" .. Q(), { autoSplit = Data.autoSplit, services = Data.services, ignore = New, scriptExt = Data.scriptExt, inlineLines = Data.inlineLines, terrainFile = Data.terrainFile })
 		if E then error(E, 0) end
 		SetPending(nil)
 		SetInfo((Has and "Объект снова синхронизируется: " or "Объект исключён из синхронизации: ") .. A.Path
@@ -1804,7 +2098,7 @@ do
 
 	-- ===== Террейн (в отдельной функции: у Lua лимит 200 локальных переменных) =====
 	;(function()
-		local TB64, TMAX = 300000, 40000
+		local TB64 = 300000
 		local Air = Enum.Material.Air
 		local HasES, ES = pcall(game.GetService, game, "EncodingService")
 		if not HasES then ES = nil end
@@ -1980,7 +2274,6 @@ do
 				if Rg[A] < -32000 or Rg[A + 3] > 32000 then error("Область выходит за ±32000", 0) end
 			end
 			local Cnt = ((Rg[4] - Rg[1]) // 64) * ((Rg[5] - Rg[2]) // 64) * ((Rg[6] - Rg[3]) // 64)
-			if Cnt > TMAX then error("Область слишком большая: " .. Cnt .. " кусков (максимум " .. TMAX .. ")", 0) end
 			return Rg
 		end
 
@@ -1991,7 +2284,8 @@ do
 			local Total = (CX1 - CX0 + 1) * (CY1 - CY0 + 1) * (CZ1 - CZ0 + 1)
 			local Terr = workspace.Terrain
 			local Data, Pos, Edge, Done = {}, {}, 0, 0
-			local TY, TP = os.clock(), os.clock()
+			local TY = os.clock()
+			Prog.Stage(Label, Total)
 
 			-- воксели на внешней границе области (не воздух): террейн мог выйти за область
 			local function EdgeCount(M, CX, CY, CZ)
@@ -2018,13 +2312,10 @@ do
 							Pos[K] = { CX, CY, CZ }
 						end
 						Done += 1
+						Prog.Step(Done)
 						if os.clock() - TY > 0.05 then
 							task.wait()
 							TY = os.clock()
-							if TY - TP > 1 then
-								TP = TY
-								SetInfo(Label .. ": " .. Done .. "/" .. Total, Dim())
-							end
 						end
 					end
 				end
@@ -2086,12 +2377,15 @@ do
 
 		-- ---------- передача ----------
 		local function Upload(Buf)
+			Prog.Stage("Террейн: сжатие файла", 0, true)
+			task.wait()
 			local Z = ES:CompressBuffer(Buf, Enum.CompressionAlgorithm.Zstd, 3)
 			local B64 = buffer.tostring(ES:Base64Encode(Z))
 			local Parts = math.max(1, math.ceil(#B64 / TB64))
 			local Session = HttpService:GenerateGUID(false)
+			Prog.Stage("Террейн: отправка файла", Parts)
 			for I = 1, Parts do
-				SetInfo("Террейн: отправка " .. I .. "/" .. Parts, Dim())
+				Prog.Step(I - 1)
 				local _, E = Call("/terrain/put" .. Q() .. "&session=" .. Session .. "&part=" .. I .. "&parts=" .. Parts,
 					{ data = string.sub(B64, (I - 1) * TB64 + 1, I * TB64) })
 				if E then error(E, 0) end
@@ -2100,14 +2394,19 @@ do
 		end
 
 		local function Download()
+			Prog.Stage("Террейн: загрузка файла", 0)
 			local Got, Parts, I = {}, 1, 1
 			while I <= Parts do
 				local D, E = Call("/terrain/get" .. Q() .. "&part=" .. I)
 				if E then error(E, 0) end
 				Parts = D.parts
 				Got[I] = D.data
+				Prog.total = Parts
+				Prog.Step(I)
 				I += 1
 			end
+			Prog.Stage("Террейн: распаковка", 0, true)
+			task.wait()
 			local Raw = ES:Base64Decode(buffer.fromstring(table.concat(Got)))
 			return ES:DecompressBuffer(Raw, Enum.CompressionAlgorithm.Zstd)
 		end
@@ -2129,6 +2428,8 @@ do
 			local Data, Pos, Edge, Total = ScanRegion(Rg, Pal, "Террейн: чтение")
 			local N = 0
 			for _ in pairs(Data) do N += 1 end
+			Prog.Stage("Террейн: упаковка", 0, true)
+			task.wait()
 			local Size = Upload(BuildFile(Rg, Pal, Data, Pos))
 			TPendingN = nil
 			local Str = string.format("Террейн сохранён: кусков с данными %d из %d, файл %d КБ", N, Total, Size // 1024)
@@ -2198,15 +2499,16 @@ do
 			local Items = ItemsOf(Res.pal)
 			local Journal = { items = Items, list = {} }
 			local TY = os.clock()
+			Prog.Stage("Террейн: запись кусков", #Res.change)
 			local Ok, Err = pcall(function()
 				for I, K in ipairs(Res.change) do
+					Prog.Step(I - 1)
 					local P = Res.f.pos[K] or Res.cpos[K]
 					table.insert(Journal.list, { P, Res.cur[K] })
 					WriteChunk(P, Res.f.data[K], Items)
 					if os.clock() - TY > 0.05 then
 						task.wait()
 						TY = os.clock()
-						SetInfo("Террейн: запись " .. I .. "/" .. #Res.change, Dim())
 					end
 				end
 			end)
@@ -2223,9 +2525,11 @@ do
 		local function TerrainUndoRun()
 			local J = TJournal
 			if not J then error("Нечего отменять", 0) end
+			Prog.Stage("Террейн: возврат", #J.list, true)
 			local TY = os.clock()
 			for I = #J.list, 1, -1 do
 				WriteChunk(J.list[I][1], J.list[I][2], J.items)
+				Prog.done = #J.list - I + 1
 				if os.clock() - TY > 0.05 then task.wait(); TY = os.clock() end
 			end
 			TJournal = nil
@@ -2306,11 +2610,11 @@ do
 		local TC = Card(Root, 6)
 		TC.Visible = false
 		Text(TC, 1, "Террейн", { Bold = true, Size = 15 })
-		Text(TC, 2, "Отдельно от обычного Pull/Push. Область в студах «x0,y0,z0  x1,y1,z1», округляется до 64. Файл: Terrain.voxels в папке плейса.",
+		Text(TC, 2, "Отдельно от обычного Pull/Push. Область в студах «x0,y0,z0  x1,y1,z1», округляется до 64. Файл задаётся в «Настройки плейса → Файл террейна».",
 			{ Color = C.Dim, Size = 12 })
 		RegionBox = Box(TC, 3, 28, false)
 		RegionBox.PlaceholderText = "x0,y0,z0  x1,y1,z1"
-		RegionBox.Text = plugin:GetSetting(TKey) or "-512,-128,-512  512,256,512"
+		RegionBox.Text = plugin:GetSetting(TKey) or "-512,-256,-512  512,256,512"
 		RegionBox.FocusLost:Connect(function() plugin:SetSetting(TKey, RegionBox.Text) end)
 		local TSel = Button(TC, 4, "Область из выделенной детали/модели", "link")
 		local VizBtn = Button(TC, 5, "👁 Показать область", "link")
@@ -2469,10 +2773,17 @@ do
 	Text(IgnCard, 2, "Пути объектов вместе с потомками, по одному в строке, например Workspace/Camera.", { Color = C.Dim, Size = 13 })
 	local IgnBox = Box(IgnCard, 3, 70, true)
 
-	local SaveBtn = Button(SRoot, 6, "Сохранить настройки", "primary", UDim2.new(1, 0, 0, 32))
-	local StatL = Text(SRoot, 7, "", { Color = C.Dim, Size = 13 })
+	local TerrCard = Card(SRoot, 6)
+	Text(TerrCard, 1, "Файл террейна", { Bold = true, Size = 15 })
+	Text(TerrCard, 2, "Путь к файлу вокселей: относительно папки плейса, с ../ или полный. По умолчанию Terrain.voxels. "
+		.. "Старый файл при смене пути не переносится: перенесите его сами или сделайте «Террейн: Pull» заново.",
+		{ Color = C.Dim, Size = 13 })
+	local TerrBox = Box(TerrCard, 3, 28, false)
 
-	local SplCard = Card(SRoot, 8)
+	local SaveBtn = Button(SRoot, 7, "Сохранить настройки", "primary", UDim2.new(1, 0, 0, 32))
+	local StatL = Text(SRoot, 8, "", { Color = C.Dim, Size = 13 })
+
+	local SplCard = Card(SRoot, 9)
 	Text(SplCard, 1, "Вынесено в отдельные файлы", { Bold = true, Size = 15 })
 	Text(SplCard, 2, "Клик по пути — выделить в Explorer. «Вернуть» — вернуть в общий файл. ✕ — убрать только запись (для «фантомов»), объекты и файлы не трогаются.", { Color = C.Dim, Size = 13 })
 	local SplitsFrame = make("Frame", { LayoutOrder = 3, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = AutoY,
@@ -2523,6 +2834,7 @@ do
 		Scr.Inl.Text = tostring(D.inlineLines or 8)
 		SvcBox.Text = table.concat(D.services or {}, "\n")
 		IgnBox.Text = table.concat(D.ignore or {}, "\n")
+		TerrBox.Text = tostring(D.terrainFile or "Terrain.voxels")
 		for _, Ch in ipairs(SplitsFrame:GetChildren()) do
 			if Ch:IsA("Frame") or Ch:IsA("TextLabel") then Ch:Destroy() end
 		end
@@ -2598,7 +2910,8 @@ do
 		if Ext ~= "lua" and Ext ~= "luau" then error("Расширение скриптов: lua или luau", 0) end
 		local Inl = tonumber(Scr.Inl.Text)
 		if not Inl or Inl < 0 or Inl > 200 or Inl ~= math.floor(Inl) then error("Строк в @code: целое число 0–200", 0) end
-		local D, E = Call("/settings" .. Q(), { autoSplit = N, services = Svc, ignore = SplitLines(IgnBox.Text), scriptExt = Ext, inlineLines = Inl })
+		local TF = string.match(TerrBox.Text, "^%s*(.-)%s*$")
+		local D, E = Call("/settings" .. Q(), { autoSplit = N, services = Svc, ignore = SplitLines(IgnBox.Text), scriptExt = Ext, inlineLines = Inl, terrainFile = TF })
 		if E then error(E, 0) end
 		SStatus((D.text or "Готово") .. ". Чтобы изменения попали в файлы, сделайте Pull.", Green)
 		ShowObject(true)

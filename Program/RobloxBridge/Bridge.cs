@@ -15,8 +15,9 @@ public sealed class BridgeProp{
 }
 
 public sealed class BridgeNode{
-    public string Class = "";
-    public string Name  = "";
+    public string           Class = "";
+    public string           Name  = "";
+    public string?          Title;   // имя в Studio для строки корня сервиса (у обычных объектов null)
     public List<BridgeProp> Props    = [];    // включая Pivot и Source (скрипты)
     public List<BridgeProp> Attrs    = [];
     public List<string>     Tags     = [];
@@ -45,9 +46,11 @@ public static class Bridge{
 
     public static readonly string[] DefaultServices = [
         "Workspace", "Lighting", "MaterialService", "ReplicatedFirst", "ReplicatedStorage", "ServerScriptService",
-        "ServerStorage", "StarterGui", "StarterPack", "StarterPlayer", "Teams", "SoundService"
+        "ServerStorage", "StarterGui", "StarterPack", "StarterPlayer", "Teams", "SoundService",
+        "Players", "Chat", "TextChatService", "LocalizationService", "TestService", "HttpService",
+        "ProximityPromptService", "VoiceChatService"
     ];
-    public static readonly string[] DefaultIgnore = ["Workspace/Camera"];
+    public static readonly string[] DefaultIgnore = [];
 
     private static readonly string[]     __PropFirst = ["Pivot", "Position", "Orientation", "Size"];
     private static readonly UTF8Encoding __Utf8      = new(false);
@@ -104,7 +107,7 @@ public static class Bridge{
     private static void __WriteNode(StringBuilder Sb, BridgeNode N, int Depth){
         string Pad = new(' ', Depth * 4);
 
-        Sb.Append(Pad).Append(N.Class).Append(' ').Append(Quote(N.Name));
+        Sb.Append(Pad).Append(N.Class).Append(' ').Append(Quote(N.Title ?? N.Name));
 
         if(N.AtSrc  != null){ Sb.Append(" @src=").Append(Quote(N.AtSrc)); }
         if(N.AtFile != null){ Sb.Append(" @file=").Append(Quote(N.AtFile)); }
@@ -453,7 +456,7 @@ public static class Bridge{
 
         List<BridgeNode> Kept = [];
         foreach(string S in Services){
-            BridgeNode? R = Roots.Find(N => N.Class == S);
+            BridgeNode? R = Roots.Find(N => N.Name == S);
             if(R != null){ Kept.Add(R); }
         }
 
@@ -644,7 +647,7 @@ public static class Bridge{
     private static BridgeNode __Emit(BridgeNode N, string NodePath, WriteCtx Ctx){
         Ctx.Seen.Add(NodePath);
 
-        BridgeNode C = new(){ Class = N.Class, Name = N.Name, Tags = N.Tags, Attrs = N.Attrs, Props = [..N.Props] };
+        BridgeNode C = new(){ Class = N.Class, Name = N.Name, Title = N.Title, Tags = N.Tags, Attrs = N.Attrs, Props = [..N.Props] };
 
         BridgeProp? Src = N.Get("Source");
         if(Src != null && Src.Kind == BridgeKind.Str){
@@ -735,6 +738,14 @@ public static class Bridge{
             Visited.Add(Rel);
 
             List<BridgeNode> Part = Parse(File.ReadAllText(F), Rel, Problems);
+
+            // Name корня = имя файла (ключ сервиса), имя из строки («RS») - в Title, только для показа
+            string Stem = Path.GetFileNameWithoutExtension(F);
+            if(Part.Count == 1 && Part[0].Name != Stem){
+                Part[0].Title = Part[0].Name;
+                Part[0].Name  = Stem;
+            }
+
             __Resolve(Part, Root, Visited, Problems, Warnings, Light);
             Roots.AddRange(Part);
         }
@@ -897,7 +908,7 @@ public static class Bridge{
         for(int I = 0; I < Shown; I++){
             BridgeNode N = L[I];
 
-            Sb.Append(' ', Level * 2).Append(N.Class).Append(' ').Append(Quote(N.Name));
+            Sb.Append(' ', Level * 2).Append(N.Class).Append(' ').Append(Quote(N.Title ?? N.Name));
 
             if(Level == 0){                                      Sb.Append($"  [{SceneDir}/{__FileSeg(N.Name)}.bridge]"); }
             else if(Splits.TryGetValue(Paths[I], out string? F)){ Sb.Append($"  [{F}]"); }
@@ -936,6 +947,8 @@ public static class Bridge{
     }
 
     public const string AgentsText = """
+INCORRECT, NEED UPDATE
+
 # RobloxBridge: инструкция для ИИ
 
 Эта папка — проект Roblox в текстовом формате .bridge. Приложение RobloxBridge переносит плейсы в Studio и обратно кнопками Pull (Studio → файлы) и Push (файлы → Studio). Перед применением пользователь видит diff. Git ведёт пользователь, ты его не трогаешь.
@@ -944,16 +957,18 @@ public static class Bridge{
 
 ## Структура проекта
 - `bridge.json` — описание проекта, список плейсов. Не правь.
-- `Prefabs/<Имя>.bridge` — префабы (шаблоны объектов), общие для всех плейсов.
-- `Places/<папка>/` — один плейс (по умолчанию папка названа по PlaceId). Все пути ниже (`Scene/`, `Scripts/`, `Geometry/`) считаются от этой папки. Работай только с тем плейсом, о котором просят.
+- `AGENTS.md` — этот файл.
+- `Prefabs/<Имя>.bridge` — префабы (шаблоны объектов), общие для всех плейсов. Префаб может лежать и в другом месте, см. раздел «Префабы».
+- `Places/<папка>/` — один плейс (по умолчанию папка названа по PlaceId). Пути `Scene/`, `Scripts/`, `Geometry/` ниже считаются от этой папки. Работай только с тем плейсом, о котором просят.
 
 ## Структура плейса
 - `Scene/<Сервис>.bridge` — по одному файлу на сервис (Workspace, Lighting, ReplicatedStorage, ...).
 - `Scene/<Сервис>/...bridge` — вынесенные поддеревья, подключаются директивой `@file`.
-- `Scripts/<путь объекта>.lua` — тексты скриптов, подключаются директивой `@src`.
-- `Geometry/<хеш>.bin` — геометрия юнионов. Бинарные файлы, не открывай и не изменяй.
+- `Scripts/<путь объекта>.luau` — тексты скриптов, подключаются директивой `@src`. Расширение новых файлов задаётся в `place.json` (`ScriptExt`: `luau` по умолчанию или `lua`). Уже существующие файлы остаются как есть, в том числе `.lua`.
+- `Geometry/<хеш>.union` — геометрия юнионов. Бинарные файлы, не открывай и не изменяй.
 - `Terrain.voxels` — воксели террейна. Бинарный файл, не трогай.
-- `_map.txt` — обзор дерева (генерируется, не править). `place.json` — настройки (Services, Ignore, Splits, AutoSplit).
+- `_map.txt` — обзор дерева (генерируется, не править).
+- `place.json` — настройки: `Services`, `Ignore`, `Splits`, `AutoSplit`, `ScriptExt`, `InlineLines`. Правь только если об этом просят.
 
 Сохраняются только сервисы из `place.json → Services`. Объекты из `Ignore` синхронизация не видит. Не добавляй сервисы, которых нет в `Scene/`.
 
@@ -994,37 +1009,64 @@ public static class Bridge{
 - Id нужен, когда путь неудобен или может поменяться. Объекту ставят `$_id="frame1"`, ссылаются так: `Part0=@"*frame1"`. Id уникален в пределах плейса.
 - Ссылка должна вести на существующий объект синхронизируемого сервиса. Битая ссылка, дубль id или ссылка на ignore-объект (например `Workspace/Camera`) останавливают весь Push с ошибкой.
 - Ссылочные свойства: `Part0`, `Part1`, `PrimaryPart`, `Value` у ObjectValue и т.п. Атрибутами ссылки быть не могут.
+- Корень сервиса может называться в Studio иначе: `ReplicatedStorage "RS"`. Файл (`Scene/ReplicatedStorage.bridge`), пути и ссылки всегда идут по имени сервиса (`ReplicatedStorage/Folder`), а не по имени в Studio. Имя в строке корня не меняй: Push его не применяет.
 
 ## Скрипты
-- В .bridge: `Script "Имя" @src="Scripts/Workspace/Door/Имя.lua"`. Код — в .lua, путь файла повторяет путь объекта. Классы: Script, LocalScript, ModuleScript.
-- Новый скрипт = новый .lua + строка в .bridge.
-- Короткий скрипт можно записать прямо в .bridge: `Script "Имя" @code="print(1)\nprint(2)"` или блоком (`>>>` на отдельной строке закрывает блок):
+Классы: Script, LocalScript, ModuleScript. Код хранится одним из двух способов.
+
+**Короткий скрипт — прямо в .bridge** (до 8 строк и до 400 символов; порог `InlineLines` в `place.json`, `0` = всегда файл):
+
+    Script "Имя" @code="print(1)\nprint(2)"
+
+или блоком (`>>>` на отдельной строке закрывает блок):
 
     Script "Имя" @code=<<<
         print("hi")
     >>>
 
-  После Pull такой скрипт будет вынесен в `Scripts/*.lua`. Если есть и `@src`, и `@code`, побеждает `@src`.
+Такой скрипт после Pull остаётся кодом в .bridge и в файл сам не переносится. Если он вырос больше порога, Pull вынесет его в файл.
+
+**Длинный скрипт — отдельный файл:** `Script "Имя" @src="Scripts/Workspace/Door/Имя.luau"`.
+- Новый скрипт = новый файл (по умолчанию `.luau`) + строка в .bridge. Путь файла повторяет путь объекта.
+- В `@src` можно написать путь от папки плейса (`Scripts/...`), `../Shared/Util.luau` или полный путь. Pull сохраняет путь так, как он записан: сам его не меняет и расширение не переименовывает.
+- Файл вне папки проекта работает, но Push покажет `! файл вне проекта`: через git такой файл не передаётся другому человеку.
+- Один файл — один объект. Если два объекта ссылаются на один `@src`, Push остановится с ошибкой «уже занят другим объектом».
+- Если есть и `@src`, и `@code`, побеждает `@src`.
+
+Не меняй расширение и путь существующих скриптов без просьбы: для Studio это выглядит как другой файл.
 
 ## Вынос в файлы
 Новый .bridge-файл подключай объектом без `{}` с `@file="Scene/.../Файл.bridge"`; файл содержит дочерние объекты этого объекта. Большие поддеревья приложение выносит само (порог `AutoSplit` в `place.json`).
 
 ## Префабы
-- Префаб — файл `Prefabs/Lamp.bridge` с одним корневым объектом (с детьми).
-- Экземпляр: объект с `$_prefab="Prefabs/Lamp.bridge"`. Положение и свойства экземпляра задаются на нём самом.
-- Параметры — атрибуты корня префаба. В тексте префаба `"{Имя}"` подставляет значение параметра. Экземпляр переопределяет параметр своим атрибутом.
-- Повороты префабов не поддерживаются: не задавай поворот экземпляру, если не уверен.
+- Префаб — файл `.bridge` с одним корневым объектом (с детьми). Обычно `Prefabs/Lamp.bridge`.
+- Экземпляр: объект с `$_prefab="Prefabs/Lamp.bridge"`. Положение (`CFrame`, `Position`, `Pivot`) и свойства экземпляра задаются на нём самом.
+- Путь префаба — любой: от корня проекта, `../Shared/Lamp.bridge` или полный. Файл должен иметь расширение `.bridge`, иначе ошибка «недопустимый путь префаба». Префаб вне проекта работает, но Push покажет `! префаб вне проекта`, и через git он не передаётся.
 - Меняешь префаб — изменятся все экземпляры.
 
+### Параметры
+- Параметры — атрибуты корня префаба (значения по умолчанию). Экземпляр переопределяет параметр своим атрибутом:
+
+      Model "T1" $_prefab="Prefabs/Turret.bridge" $Damage=25 $Label="Левая"
+
+- Подстановка только в форме `${Имя}`. Старая форма `{Имя}` не подставляется: Push покажет подсказку «пишите ${Имя}».
+- Работает и в свойствах, и в коде скриптов префаба. Если значение свойства целиком `${Имя}`, берутся и значение, и тип параметра.
+- В коде Lua подставляется литерал по типу: строка — в кавычках, число/true/false — как есть, `#RRGGBB` → `Color3.fromRGB(...)`, 2/3/4 числа → `Vector2/Vector3/UDim2.new(...)`.
+  Пример: `local Damage = ${Damage}`, `print(${Label})`.
+- `${Имя:raw}` — вставить значение без кавычек и без преобразования. `$${` даёт обычное `${`.
+- Неизвестный параметр (не задан ни в префабе, ни у экземпляра) — ошибка Push «параметр «Имя» не задан».
+- `@src` внутри префаба считается от папки префаба.
+- Не поддерживаются: повороты экземпляров (не задавай поворот, если не уверен), вложенные префабы, `@file` внутри префаба.
+
 ## Юнионы
-- UnionOperation, NegateOperation, IntersectOperation хранят форму в `Geometry/<хеш>.bin`, в .bridge — только свойства и ссылка: `UnionOperation "Wall" Size=4,8,1 CFrame=0,4,0 Color=#888888 $_geo="a1b2c3d4e5f60718"`.
+- UnionOperation, NegateOperation, IntersectOperation хранят форму в `Geometry/<хеш>.union`, в .bridge — только свойства и ссылка: `UnionOperation "Wall" Size=4,8,1 CFrame=0,4,0 Color=#888888 $_geo="a1b2c3d4e5f60718"`.
 - Новую геометрию создать из файлов нельзя. Новый юнион делается только в Studio и потом через Pull.
 - Можно: двигать, красить, менять свойства, копировать строку с тем же `$_geo` (получится ещё один такой же юнион), удалять.
 - Нельзя: придумывать `$_geo` и править `.bin`. Несуществующий хеш = ошибка в preview, объект не создастся.
 - Если подставить `$_geo` другого юниона, при Push форма заменится. Ссылки на этот юнион (например WeldConstraint) при замене сбиваются.
 
 ## Террейн
-В `Scene/Workspace.bridge` у `Terrain` хранятся только свойства (вода, цвета и т.п.). Воксели лежат в `Terrain.voxels` и переносятся отдельными кнопками. Файл не трогай.
+В `Scene/Workspace.bridge` у `Terrain` хранятся только свойства (вода, цвета и т.п.). Воксели лежат в `Terrain.voxels` и переносятся отдельными кнопками (в приложении и в плагине), не обычным Pull/Push. Файл не трогай, сгенерировать или отредактировать его нельзя.
 
 ## Ограничения и ловушки
 - Не выдумывай свойства и классы. Неизвестные игнорируются и показываются в preview.
@@ -1038,7 +1080,7 @@ public static class Bridge{
 ## Как проверить свою работу
 Перед применением приложение показывает diff:
 - `+` создастся, `-` удалится, `~` изменится,
-- `x` будет проигнорировано (с причиной), `!` требует внимания (например, замена юниона).
+- `x` будет проигнорировано (с причиной), `!` требует внимания (например, замена юниона, файл или префаб вне проекта, непереданный параметр).
 
 Если в diff есть `-` или `x`, которых ты не планировал, остановись и разберись: скорее всего, ошибка в пути, имени класса или названии свойства. Массовые удаления (десятки объектов) — признак поломки файла.
 """;
