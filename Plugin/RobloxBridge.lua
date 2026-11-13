@@ -753,7 +753,7 @@ do
 	local function Kids(Inst, Path)
 		local Items = {}
 		for _, Ch in ipairs(Inst:GetChildren()) do
-			if Ch.ClassName ~= "TouchTransmitter" then table.insert(Items, Ch) end
+			if Ch.ClassName ~= "TouchTransmitter" and Ch.Name ~= "RobloxBridge_Pins" then table.insert(Items, Ch) end
 		end
 		table.sort(Items, function(A, B)
 			if A.Name ~= B.Name then return A.Name < B.Name end
@@ -1122,17 +1122,7 @@ do
 			return Sum
 		end
 
-		-- размер узла: собственный JSON (без детей) и всего поддерева
 		Prog.Stage("Подготовка к отправке", Counter)
-		local function Measure(N)
-			local Own = #HttpService:JSONEncode({ c = N.c, n = N.n, p = N.p, a = N.a, g = N.g }) + 2
-			local Sum = Own
-			for _, K in ipairs(N.k or {}) do Sum += Measure(K) + 1 end
-			Self[N], Tot[N] = Own, Sum
-			Seen += 1
-			if Seen % 300 == 0 then Prog.Step(Seen); task.wait() end
-			return Sum
-		end
 
 		local Names = {}
 		for N in pairs(Svc) do table.insert(Names, N) end
@@ -2262,60 +2252,139 @@ do
 			return string.format("%d,%d,%d  %d,%d,%d", Rg[1], Rg[2], Rg[3], Rg[4], Rg[5], Rg[6])
 		end
 
+		local function RegionsText(Regs)
+			local T = {}
+			for I, Rg in ipairs(Regs) do T[I] = RegionText(Rg) end
+			return table.concat(T, "\n")
+		end
+
 		local function ParseRegion(S)
 			local N = {}
 			for X in string.gmatch(S, "%-?%d+%.?%d*") do table.insert(N, tonumber(X)) end
-			if #N ~= 6 then error("Область: нужно 6 чисел «x0,y0,z0  x1,y1,z1»", 0) end
+			if #N ~= 6 then error("нужно 6 чисел «x0,y0,z0  x1,y1,z1»", 0) end
 			local Rg = {}
 			for A = 1, 3 do
 				local Lo, Hi = math.min(N[A], N[A + 3]), math.max(N[A], N[A + 3])
 				Rg[A] = math.floor(Lo / 64) * 64
 				Rg[A + 3] = math.max(math.ceil(Hi / 64) * 64, Rg[A] + 64)
-				if Rg[A] < -32000 or Rg[A + 3] > 32000 then error("Область выходит за ±32000", 0) end
+				if Rg[A] < -128000 or Rg[A + 3] > 128000 then error("выходит за ±128000 (граница террейна Roblox)", 0) end
 			end
-			local Cnt = ((Rg[4] - Rg[1]) // 64) * ((Rg[5] - Rg[2]) // 64) * ((Rg[6] - Rg[3]) // 64)
 			return Rg
 		end
 
-		-- Читает террейн области. Возвращает Data[ключ] = RLE-строка, Pos[ключ] = {cx,cy,cz}, Edge, Total
-		local function ScanRegion(Rg, Pal, Label)
-			local CX0, CY0, CZ0 = Rg[1] // 64, Rg[2] // 64, Rg[3] // 64
-			local CX1, CY1, CZ1 = Rg[4] // 64 - 1, Rg[5] // 64 - 1, Rg[6] // 64 - 1
-			local Total = (CX1 - CX0 + 1) * (CY1 - CY0 + 1) * (CZ1 - CZ0 + 1)
+		-- Несколько областей: по одной на строке. Пересекаться нельзя.
+		local function ParseRegions(S)
+			local Res = {}
+			for Line in string.gmatch(S, "[^\r\n]+") do
+				if string.find(Line, "%d") then
+					local Ok, Rg = pcall(ParseRegion, Line)
+					if not Ok then error("Область №" .. (#Res + 1) .. ": " .. tostring(Rg), 0) end
+					table.insert(Res, Rg)
+				end
+			end
+			if #Res == 0 then error("Задайте хотя бы одну область", 0) end
+			for I = 1, #Res do
+				for J = I + 1, #Res do
+					local A, B = Res[I], Res[J]
+					if A[1] < B[4] and B[1] < A[4] and A[2] < B[5] and B[2] < A[5] and A[3] < B[6] and B[3] < A[6] then
+						error("Области №" .. I .. " и №" .. J .. " пересекаются. Разделите их или объедините в одну.", 0)
+					end
+				end
+			end
+			return Res
+		end
+
+		-- Читает террейн всех областей. Возвращает Data[ключ] = RLE-строка, Pos[ключ] = {cx,cy,cz}, Edge, Total
+		local function AnySolid(M)
+			for I = 1, 16 do
+				local MI = M[I]
+				for J = 1, 16 do
+					local MJ = MI[J]
+					for K = 1, 16 do
+						if MJ[K] ~= Air then return true end
+					end
+				end
+			end
+			return false
+		end
+
+		-- Читает террейн всех областей. Возвращает Data[ключ] = RLE-строка, Pos[ключ] = {cx,cy,cz}, Edge, Total
+		local function ScanRegion(Regs, Pal, Label)
 			local Terr = workspace.Terrain
+			local function Covered(X, Y, Z)
+				for _, Rg in ipairs(Regs) do
+					if X >= Rg[1] // 64 and X < Rg[4] // 64 and Y >= Rg[2] // 64 and Y < Rg[5] // 64
+						and Z >= Rg[3] // 64 and Z < Rg[6] // 64 then return true end
+				end
+				return false
+			end
+			local Total = 0
+			for _, Rg in ipairs(Regs) do
+				Total += ((Rg[4] - Rg[1]) // 64) * ((Rg[5] - Rg[2]) // 64) * ((Rg[6] - Rg[3]) // 64)
+			end
 			local Data, Pos, Edge, Done = {}, {}, 0, 0
 			local TY = os.clock()
 			Prog.Stage(Label, Total)
 
-			-- воксели на внешней границе области (не воздух): террейн мог выйти за область
+			-- есть ли террейн в соседнем куске (с запоминанием)
+			local Nb = {}
+			local function NbHas(X, Y, Z)
+				local Key = CK(X, Y, Z)
+				local V = Nb[Key]
+				if V == nil then
+					local Lo = Vector3.new(X * 64, Y * 64, Z * 64)
+					V = AnySolid((Terr:ReadVoxels(Region3.new(Lo, Lo + Vector3.new(64, 64, 64)), 4)))
+					Nb[Key] = V
+				end
+				return V
+			end
+
+			-- воксели на внешней грани, если за гранью нет другой области, но там есть террейн
 			local function EdgeCount(M, CX, CY, CZ)
-				if CX ~= CX0 and CX ~= CX1 and CY ~= CY0 and CY ~= CY1 and CZ ~= CZ0 and CZ ~= CZ1 then return 0 end
 				local N = 0
-				for I = 1, 16 do for J = 1, 16 do for K = 1, 16 do
-					if M[I][J][K] ~= Air and ((CX == CX0 and I == 1) or (CX == CX1 and I == 16)
-						or (CY == CY0 and J == 1) or (CY == CY1 and J == 16)
-						or (CZ == CZ0 and K == 1) or (CZ == CZ1 and K == 16)) then N += 1 end
-				end end end
+				for F = 1, 6 do
+					local A = (F - 1) % 3 + 1
+					local Dir = F > 3 and 1 or -1
+					local NX = CX + (A == 1 and Dir or 0)
+					local NY = CY + (A == 2 and Dir or 0)
+					local NZ = CZ + (A == 3 and Dir or 0)
+					if not Covered(NX, NY, NZ) then
+						local Face = Dir > 0 and 16 or 1
+						local Cnt = 0
+						for P = 1, 16 do
+							for Q = 1, 16 do
+								local V
+								if A == 1 then V = M[Face][P][Q]
+								elseif A == 2 then V = M[P][Face][Q]
+								else V = M[P][Q][Face] end
+								if V ~= Air then Cnt += 1 end
+							end
+						end
+						if Cnt > 0 and NbHas(NX, NY, NZ) then N += Cnt end
+					end
+				end
 				return N
 			end
 
-			for CX = CX0, CX1 do
-				for CY = CY0, CY1 do
-					for CZ = CZ0, CZ1 do
-						local Lo = Vector3.new(CX * 64, CY * 64, CZ * 64)
-						local M, O = Terr:ReadVoxels(Region3.new(Lo, Lo + Vector3.new(64, 64, 64)), 4)
-						Edge += EdgeCount(M, CX, CY, CZ)
-						local S = EncChunk(M, O, Pal)
-						if S then
-							local K = CK(CX, CY, CZ)
-							Data[K] = S
-							Pos[K] = { CX, CY, CZ }
-						end
-						Done += 1
-						Prog.Step(Done)
-						if os.clock() - TY > 0.05 then
-							task.wait()
-							TY = os.clock()
+			for _, Rg in ipairs(Regs) do
+				for CX = Rg[1] // 64, Rg[4] // 64 - 1 do
+					for CY = Rg[2] // 64, Rg[5] // 64 - 1 do
+						for CZ = Rg[3] // 64, Rg[6] // 64 - 1 do
+							local Lo = Vector3.new(CX * 64, CY * 64, CZ * 64)
+							local M, O = Terr:ReadVoxels(Region3.new(Lo, Lo + Vector3.new(64, 64, 64)), 4)
+							Edge += EdgeCount(M, CX, CY, CZ)
+							local S = EncChunk(M, O, Pal)
+							if S then
+								local K = CK(CX, CY, CZ)
+								Data[K] = S
+								Pos[K] = { CX, CY, CZ }
+							end
+							Done += 1
+							Prog.Step(Done)
+							if os.clock() - TY > 0.05 then
+								task.wait()
+								TY = os.clock()
+							end
 						end
 					end
 				end
@@ -2323,11 +2392,14 @@ do
 			return Data, Pos, Edge, Total
 		end
 
-		-- ---------- файл ----------
-		local function BuildFile(Rg, Pal, Data, Pos)
+		-- ---------- файл (RBT2: список областей; RBT1 читается как одна область) ----------
+		local function BuildFile(Regs, Pal, Data, Pos)
 			local W = NewW()
-			PutS(W, "RBT1")
-			for I = 1, 6 do PutN(W, Rg[I], 4) end
+			PutS(W, "RBT2")
+			PutN(W, #Regs, 2)
+			for _, Rg in ipairs(Regs) do
+				for I = 1, 6 do PutN(W, Rg[I], 4) end
+			end
 			PutN(W, #Pal.names, 2)
 			for _, N in ipairs(Pal.names) do PutB(W, #N); PutS(W, N) end
 			local Keys = {}
@@ -2351,12 +2423,18 @@ do
 		end
 
 		local function ParseFile(Buf)
-			if buffer.len(Buf) < 4 or buffer.readstring(Buf, 0, 4) ~= "RBT1" then
-				error("Terrain.voxels: неизвестный формат", 0)
+			local Magic = buffer.len(Buf) >= 4 and buffer.readstring(Buf, 0, 4) or ""
+			if Magic ~= "RBT1" and Magic ~= "RBT2" then
+				error("Файл террейна: неизвестный формат", 0)
 			end
 			local Rd = { b = Buf, p = 4 }
-			local Reg = {}
-			for I = 1, 6 do Reg[I] = GetN(Rd, 4, true) end
+			local Regions = {}
+			local RN = Magic == "RBT2" and GetN(Rd, 2) or 1
+			for RI = 1, RN do
+				local Reg = {}
+				for I = 1, 6 do Reg[I] = GetN(Rd, 4, true) end
+				Regions[RI] = Reg
+			end
 			local Names = {}
 			for I = 1, GetN(Rd, 2) do
 				local L = GetB(Rd)
@@ -2372,7 +2450,7 @@ do
 				Rd.p += L
 				Pos[K] = { Cx, Cy, Cz }
 			end
-			return { region = Reg, names = Names, data = Data, pos = Pos }
+			return { regions = Regions, names = Names, data = Data, pos = Pos }
 		end
 
 		-- ---------- передача ----------
@@ -2421,18 +2499,18 @@ do
 
 		local function TerrainPull()
 			NeedReady()
-			local Rg = ParseRegion(RegionBox.Text)
-			RegionBox.Text = RegionText(Rg)
+			local Regs = ParseRegions(RegionBox.Text)
+			RegionBox.Text = RegionsText(Regs)
 			plugin:SetSetting(TKey, RegionBox.Text)
 			local Pal = NewPal()
-			local Data, Pos, Edge, Total = ScanRegion(Rg, Pal, "Террейн: чтение")
+			local Data, Pos, Edge, Total = ScanRegion(Regs, Pal, "Террейн: чтение")
 			local N = 0
 			for _ in pairs(Data) do N += 1 end
 			Prog.Stage("Террейн: упаковка", 0, true)
 			task.wait()
-			local Size = Upload(BuildFile(Rg, Pal, Data, Pos))
+			local Size = Upload(BuildFile(Regs, Pal, Data, Pos))
 			TPendingN = nil
-			local Str = string.format("Террейн сохранён: кусков с данными %d из %d, файл %d КБ", N, Total, Size // 1024)
+			local Str = string.format("Террейн сохранён: областей %d, кусков с данными %d из %d, файл %d КБ", #Regs, N, Total, Size // 1024)
 			local Lines = {}
 			if Edge > 0 then
 				Str ..= ". Террейн упирается в границу области"
@@ -2446,7 +2524,7 @@ do
 		local function Compare()
 			local F = ParseFile(Download())
 			local Pal = PalFromNames(F.names)
-			local Cur, CPos = ScanRegion(F.region, Pal, "Террейн: чтение")
+			local Cur, CPos = ScanRegion(F.regions, Pal, "Террейн: чтение")
 			local Res = { f = F, cur = Cur, cpos = CPos, pal = Pal, change = {}, add = 0, mod = 0, del = 0 }
 			for K, D in pairs(F.data) do
 				if Cur[K] ~= D then
@@ -2470,7 +2548,7 @@ do
 			TPendingN = nil
 			local Total = #Res.change
 			if Total == 0 then
-				SetInfo("Террейн: изменений нет (область " .. RegionText(Res.f.region) .. ")", Green)
+				SetInfo("Террейн: изменений нет (областей в файле: " .. #Res.f.regions .. ")", Green)
 				ShowLines({})
 				return
 			end
@@ -2538,8 +2616,14 @@ do
 			ShowLines({})
 		end
 
-		-- ===== Отладочная рамка области террейна =====
-		local RegionViz = {Folder = nil}
+		-- ===== Рамки областей, маркеры, автопоиск =====
+		local RegionViz = { Folder = nil, Ads = {}, Count = 0 }
+		local RedrawViz   -- задаётся ниже
+		local VizOn, PinOn = false, false
+
+		local function RegionColor(I)
+			return Color3.fromHSV(((I - 1) * 0.618034) % 1, 0.65, 1)
+		end
 
 		local function VizRegion(Text)
 			local N = {}
@@ -2554,98 +2638,668 @@ do
 			return Mn, Mx
 		end
 
-		function RegionViz.Clear()
-			if RegionViz.Folder then
-				RegionViz.Folder:Destroy()
-				RegionViz.Folder = nil
+		-- { Mn, Mx, цвет } для каждой строки поля
+		local function VizRegions(Text)
+			local Res = {}
+			for Line in string.gmatch(Text or "", "[^\r\n]+") do
+				local Mn, Mx = VizRegion(Line)
+				if Mn then table.insert(Res, { Mn, Mx, RegionColor(#Res + 1) }) end
 			end
+			return Res
 		end
 
-		function RegionViz.Show(Mn, Mx)
-			RegionViz.Clear()
-			local Ok, Gui = pcall(function() return game:GetService("CoreGui") end)
-			if not Ok then return false end
-			local F = Instance.new("Folder")
-			F.Name = "RobloxBridge_Region"
-			local Size = Mx - Mn
-			local C = (Mn + Mx) / 2
-			local Edge = Color3.fromRGB(80, 170, 255)
+		-- пересечение коробок {x0,y0,z0,x1,y1,z1} (касание не считается)
+		local function Cross(A, B)
+			return A[1] < B[4] and B[1] < A[4] and A[2] < B[5] and B[2] < A[5] and A[3] < B[6] and B[3] < A[6]
+		end
 
-			local function Box(Pos, Sz, Transp, Top)
-				local A = Instance.new("BoxHandleAdornment")
-				A.Adornee = workspace.Terrain
-				A.AlwaysOnTop = Top
-				A.ZIndex = 1
-				A.Color3 = Edge
-				A.Transparency = Transp
-				A.Size = Sz
-				A.CFrame = CFrame.new(Pos)
-				A.Parent = F
-			end
-
-			Box(C, Size, 0.94, false) -- заливка
-			local T = 2               -- толщина рёбер
-			for _, Y in ipairs({Mn.Y, Mx.Y}) do
-				for _, Z in ipairs({Mn.Z, Mx.Z}) do
-					Box(Vector3.new(C.X, Y, Z), Vector3.new(Size.X, T, T), 0.1, true)
+		-- 13 коробок на область: заливка + 12 рёбер
+		local function VizBoxes(Mn, Mx)
+			local Size, Mid = Mx - Mn, (Mn + Mx) / 2
+			local T = math.clamp(math.max(Size.X, Size.Y, Size.Z) / 300, 2, 40)
+			local L = { { Mid, Size } }
+			for _, Y in ipairs({ Mn.Y, Mx.Y }) do
+				for _, Z in ipairs({ Mn.Z, Mx.Z }) do
+					L[#L + 1] = { Vector3.new(Mid.X, Y, Z), Vector3.new(Size.X, T, T) }
 				end
 			end
-			for _, X in ipairs({Mn.X, Mx.X}) do
-				for _, Z in ipairs({Mn.Z, Mx.Z}) do
-					Box(Vector3.new(X, C.Y, Z), Vector3.new(T, Size.Y, T), 0.1, true)
+			for _, X in ipairs({ Mn.X, Mx.X }) do
+				for _, Z in ipairs({ Mn.Z, Mx.Z }) do
+					L[#L + 1] = { Vector3.new(X, Mid.Y, Z), Vector3.new(T, Size.Y, T) }
 				end
-				for _, Y in ipairs({Mn.Y, Mx.Y}) do
-					Box(Vector3.new(X, Y, C.Z), Vector3.new(T, T, Size.Z), 0.1, true)
+				for _, Y in ipairs({ Mn.Y, Mx.Y }) do
+					L[#L + 1] = { Vector3.new(X, Y, Mid.Z), Vector3.new(T, T, Size.Z) }
 				end
 			end
+			return L
+		end
 
-			F.Parent = Gui
-			RegionViz.Folder = F
+		function RegionViz.Clear()
+			if RegionViz.Folder then RegionViz.Folder:Destroy() end
+			RegionViz.Folder, RegionViz.Ads, RegionViz.Count = nil, {}, 0
+		end
+
+		-- Рисует рамки. Если число областей то же — обновляет на месте (без мигания)
+		function RegionViz.Show(Rgns)
+			local Bad = {}
+			for I = 1, #Rgns do
+				for J = I + 1, #Rgns do
+					local A, B = Rgns[I], Rgns[J]
+					if Cross({ A[1].X, A[1].Y, A[1].Z, A[2].X, A[2].Y, A[2].Z }, { B[1].X, B[1].Y, B[1].Z, B[2].X, B[2].Y, B[2].Z }) then
+						Bad[I], Bad[J] = true, true
+					end
+				end
+			end
+			if not RegionViz.Folder or RegionViz.Count ~= #Rgns then
+				RegionViz.Clear()
+				local Ok, Gui = pcall(function() return game:GetService("CoreGui") end)
+				if not Ok then return false end
+				local F = Instance.new("Folder")
+				F.Name = "RobloxBridge_Region"
+				for _ = 1, #Rgns do
+					for K = 1, 13 do
+						local A = Instance.new("BoxHandleAdornment")
+						A.Adornee = workspace.Terrain
+						A.ZIndex = 1
+						A.AlwaysOnTop = K > 1
+						A.Transparency = K == 1 and 0.94 or 0.1
+						A.Parent = F
+						table.insert(RegionViz.Ads, A)
+					end
+				end
+				F.Parent = Gui
+				RegionViz.Folder, RegionViz.Count = F, #Rgns
+			end
+			for I, Rgn in ipairs(Rgns) do
+				local Col = Bad[I] and Color3.fromRGB(255, 60, 60) or Rgn[3]
+				for K, Bx in ipairs(VizBoxes(Rgn[1], Rgn[2])) do
+					local A = RegionViz.Ads[(I - 1) * 13 + K]
+					A.Size = Bx[2]
+					A.CFrame = CFrame.new(Bx[1])
+					A.Color3 = Col
+				end
+			end
 			return true
 		end
 
+		-- ===== Маркеры: 8 углов (кубы), 6 граней (шары), центр (большой шар) =====
+		-- Папка с Archivable=false: в файл плейса не сохраняется, плагин её не синхронизирует (см. Kids).
+		local Pins = { Folder = nil, Regs = {}, Unsaved = false, LastMove = 0, Conf = "" }
+		local FaceNames = { "грань -X", "грань -Y", "грань -Z", "грань +X", "грань +Y", "грань +Z" }
+
+		local function Snap64(V) return math.floor(V / 64 + 0.5) * 64 end
+
+		-- положения 15 маркеров по сырым границам B: углы 1-8, грани 9-14, центр 15
+		local function MarkerSpots(B)
+			local Mid = { (B[1] + B[4]) / 2, (B[2] + B[5]) / 2, (B[3] + B[6]) / 2 }
+			local L = {}
+			for C = 1, 8 do
+				local X, Y, Z = (C - 1) % 2, ((C - 1) // 2) % 2, (C - 1) // 4
+				L[C] = Vector3.new(B[1 + 3 * X], B[2 + 3 * Y], B[3 + 3 * Z])
+			end
+			for F = 1, 6 do
+				local A = (F - 1) % 3 + 1
+				local V = { Mid[1], Mid[2], Mid[3] }
+				V[A] = F > 3 and B[A + 3] or B[A]
+				L[8 + F] = Vector3.new(V[1], V[2], V[3])
+			end
+			L[15] = Vector3.new(Mid[1], Mid[2], Mid[3])
+			return L
+		end
+
+		function Pins.Clear()
+			local Had = Pins.Folder ~= nil
+			local F = Pins.Folder
+			Pins.Folder, Pins.Regs = nil, {}   -- это же останавливает цикл слежения
+			if F then F:Destroy() end
+			if Had and Pins.Unsaved then
+				Pins.Unsaved = false
+				plugin:SetSetting(TKey, RegionBox.Text)
+			end
+		end
+
+		-- ставит маркеры области по её границам (то, что уже на месте, не трогает)
+		function Pins.Place(R)
+			local L = MarkerSpots(R.b)
+			for K, P in ipairs(R.parts) do
+				if (P.Position - L[K]).Magnitude > 0.01 then P.Position = L[K] end
+				R.exp[P] = P.Position
+			end
+		end
+
+		-- размер маркера от расстояния до камеры: всегда небольшой
+		function Pins.Scale()
+			local Cam = workspace.CurrentCamera
+			if not Cam then return end
+			local CP = Cam.CFrame.Position
+			for _, R in ipairs(Pins.Regs) do
+				for K, P in ipairs(R.parts) do
+					local S = math.clamp((CP - P.Position).Magnitude * 0.025, 2, 400)
+					if K == 15 then S *= 1.5 end
+					if math.abs(P.Size.X - S) > S * 0.15 then
+						P.Size = Vector3.new(S, S, S)
+						local Ad = P:FindFirstChildOfClass("BoxHandleAdornment")
+						if Ad then Ad.Size = Vector3.new(S, S, S) end
+					end
+				end
+			end
+		end
+
+		-- итоговые области (с прилипанием к 64): поле, рамки, предупреждение о пересечении
+		function Pins.Apply(Silent)
+			local Rgns, Lines, Boxes = {}, {}, {}
+			for I, R in ipairs(Pins.Regs) do
+				local B, Rb = R.b, {}
+				for A = 1, 3 do
+					local Lo, Hi = Snap64(math.min(B[A], B[A + 3])), Snap64(math.max(B[A], B[A + 3]))
+					if Hi - Lo < 64 then Hi = Lo + 64 end
+					Rb[A], Rb[A + 3] = Lo, Hi
+				end
+				Boxes[I] = Rb
+				Rgns[I] = { Vector3.new(Rb[1], Rb[2], Rb[3]), Vector3.new(Rb[4], Rb[5], Rb[6]), R.col }
+				Lines[I] = RegionText(Rb)
+			end
+			RegionBox.Text = table.concat(Lines, "\n")
+			if VizOn then RegionViz.Show(Rgns) end
+			local Hits = {}
+			for I = 1, #Boxes do
+				for J = I + 1, #Boxes do
+					if Cross(Boxes[I], Boxes[J]) then table.insert(Hits, "№" .. I .. " и №" .. J) end
+				end
+			end
+			local Key = table.concat(Hits, ", ")
+			if Key ~= Pins.Conf then
+				Pins.Conf = Key
+				if Key ~= "" then
+					SetInfo("Области пересекаются: " .. Key .. ". Рамки красные. Раздвиньте их, иначе Pull не сработает.", Yellow)
+				elseif not Silent then
+					SetInfo("Пересечений нет.", Blue)
+				end
+			end
+		end
+
+		-- читает, что сдвинул пользователь, и пересчитывает границы
+		function Pins.Sync()
+			local Any = false
+			for _, R in ipairs(Pins.Regs) do
+				local Moved, N = {}, 0
+				for K, P in ipairs(R.parts) do
+					if (P.Position - R.exp[P]).Magnitude > 0.01 then
+						Moved[P] = K
+						N += 1
+					end
+				end
+				if N > 0 then
+					Any = true
+					local B, CP = R.b, R.parts[15]
+					if Moved[CP] then
+						-- двигали центр: сдвигаем область целиком
+						local D = CP.Position - R.exp[CP]
+						local V = { D.X, D.Y, D.Z }
+						for A = 1, 3 do
+							B[A] += V[A]
+							B[A + 3] += V[A]
+						end
+					else
+						for P, K in pairs(Moved) do
+							local Pos = P.Position
+							if K <= 8 then
+								local X, Y, Z = (K - 1) % 2, ((K - 1) // 2) % 2, (K - 1) // 4
+								B[1 + 3 * X], B[2 + 3 * Y], B[3 + 3 * Z] = Pos.X, Pos.Y, Pos.Z
+							elseif K <= 14 then
+								local F = K - 8
+								local A = (F - 1) % 3 + 1
+								B[F > 3 and A + 3 or A] = A == 1 and Pos.X or (A == 2 and Pos.Y or Pos.Z)
+							end
+						end
+					end
+					Pins.Place(R)
+				end
+			end
+			if Any then
+				Pins.Apply()
+				Pins.LastMove = os.clock()
+				Pins.Unsaved = true
+			end
+		end
+
+		function Pins.Show(Rgns)
+			Pins.Clear()
+			local Fold = Instance.new("Folder")
+			Fold.Name = "RobloxBridge_Pins"
+			Fold.Archivable = false
+			Pins.Regs, Pins.Conf = {}, ""
+			for I, Rg in ipairs(Rgns) do
+				local R = { b = { Rg[1].X, Rg[1].Y, Rg[1].Z, Rg[2].X, Rg[2].Y, Rg[2].Z }, parts = {}, exp = {}, col = Rg[3] }
+				for K = 1, 15 do
+					local P = Instance.new("Part")
+					P.Name = "Область " .. I .. " · " .. (K <= 8 and ("угол " .. K) or (K <= 14 and FaceNames[K - 8] or "центр (двигать целиком)"))
+					P.Shape = K <= 8 and Enum.PartType.Block or Enum.PartType.Ball
+					P.Size = Vector3.new(8, 8, 8)
+					P.Anchored = true
+					P.CanCollide, P.CanTouch, P.CastShadow = false, false, false
+					P.Material = Enum.Material.Neon
+					P.Color = Rg[3]
+					P.Transparency = 0.15
+					P.Archivable = false
+					local Ad = Instance.new("BoxHandleAdornment")   -- виден сквозь террейн
+					Ad.Adornee = P
+					Ad.Size = P.Size
+					Ad.AlwaysOnTop = true
+					Ad.ZIndex = 2
+					Ad.Transparency = 0.55
+					Ad.Color3 = Rg[3]
+					Ad.Parent = P
+					P.Parent = Fold
+					R.parts[K] = P
+				end
+				R.exp = {}
+				Pins.Regs[I] = R
+				Pins.Place(R)
+			end
+			Fold.Parent = workspace
+			Pins.Folder = Fold
+			Pins.Scale()
+			if Pins.Regs[1] then Selection:Set({ Pins.Regs[1].parts[15] }) end
+			task.spawn(function()
+				local N = 0
+				while Pins.Folder == Fold do
+					N += 1
+					local Ok, E = pcall(Pins.Sync)
+					if not Ok then warn("RobloxBridge: маркеры: " .. tostring(E)) end
+					if N % 5 == 0 then pcall(Pins.Scale) end
+					if Pins.Unsaved and os.clock() - Pins.LastMove > 0.6 then
+						Pins.Unsaved = false
+						plugin:SetSetting(TKey, RegionBox.Text)
+					end
+					task.wait(0.05)
+				end
+			end)
+		end
+
 		plugin.Unloading:Connect(RegionViz.Clear)
+		plugin.Unloading:Connect(Pins.Clear)
+
+		RedrawViz = function()
+			if not VizOn then return end
+			local Rgns = VizRegions(RegionBox.Text)
+			if #Rgns == 0 then RegionViz.Clear() return end
+			RegionViz.Show(Rgns)
+		end
+
+		-- текст областей изменился снаружи (кнопки, автопоиск, ввод)
+		local function RegionsChanged()
+			plugin:SetSetting(TKey, RegionBox.Text)
+			RedrawViz()
+			if PinOn then Pins.Show(VizRegions(RegionBox.Text)) end
+		end
+
+		-- ===== Автопоиск областей =====
+		-- Куски 64 студа, мир ±128000 → индексы -2000..1999
+		local function PK(X, Y, Z) return ((X + 2048) * 4096 + (Y + 2048)) * 4096 + (Z + 2048) end
+		local function UnPK(K) return K // 16777216 - 2048, (K // 4096) % 4096 - 2048, K % 4096 - 2048 end
+
+		local function HasTerrain(CX, CY, CZ)
+			local Lo = Vector3.new(CX * 64, CY * 64, CZ * 64)
+			return AnySolid((workspace.Terrain:ReadVoxels(Region3.new(Lo, Lo + Vector3.new(64, 64, 64)), 4)))
+		end
+
+		-- коробки в индексах кусков, границы включительно
+		local function Meet(A, B)
+			return A[1] <= B[4] and B[1] <= A[4] and A[2] <= B[5] and B[2] <= A[5] and A[3] <= B[6] and B[3] <= A[6]
+		end
+		local function BoxOf(L)
+			local B = { math.huge, math.huge, math.huge, -math.huge, -math.huge, -math.huge }
+			for _, K in ipairs(L) do
+				local X, Y, Z = UnPK(K)
+				if X < B[1] then B[1] = X end
+				if Y < B[2] then B[2] = Y end
+				if Z < B[3] then B[3] = Z end
+				if X > B[4] then B[4] = X end
+				if Y > B[5] then B[5] = Y end
+				if Z > B[6] then B[6] = Z end
+			end
+			return B
+		end
+		local function Union(A, B)
+			return { math.min(A[1], B[1]), math.min(A[2], B[2]), math.min(A[3], B[3]),
+				math.max(A[4], B[4]), math.max(A[5], B[5]), math.max(A[6], B[6]) }
+		end
+
+		-- Лучший разрез группы плоскостью между слоями кусков (по лучшей оси). nil, если выгода мала.
+		local function BestCut(G)
+			local B = G.box
+			local Vol = (B[4] - B[1] + 1) * (B[5] - B[2] + 1) * (B[6] - B[3] + 1)
+			local Co = { {}, {}, {} }
+			for I, K in ipairs(G.list) do
+				Co[1][I], Co[2][I], Co[3][I] = UnPK(K)
+			end
+			local Best, BestTotal = nil, Vol
+			for Ax = 1, 3 do
+				if B[Ax + 3] > B[Ax] then
+					local O1, O2 = Ax % 3 + 1, (Ax + 1) % 3 + 1
+					local Sl, Ls = {}, {}
+					for I = 1, #G.list do
+						local V, A1, A2 = Co[Ax][I], Co[O1][I], Co[O2][I]
+						local S = Sl[V]
+						if not S then
+							Sl[V] = { A1, A1, A2, A2 }
+							Ls[#Ls + 1] = V
+						else
+							if A1 < S[1] then S[1] = A1 end
+							if A1 > S[2] then S[2] = A1 end
+							if A2 < S[3] then S[3] = A2 end
+							if A2 > S[4] then S[4] = A2 end
+						end
+					end
+					table.sort(Ls)
+					local N = #Ls
+					if N >= 2 then
+						local Suf = {}
+						local A1, B1, A2, B2 = math.huge, -math.huge, math.huge, -math.huge
+						for I = N, 2, -1 do
+							local S = Sl[Ls[I]]
+							A1, B1 = math.min(A1, S[1]), math.max(B1, S[2])
+							A2, B2 = math.min(A2, S[3]), math.max(B2, S[4])
+							Suf[I] = (Ls[N] - Ls[I] + 1) * (B1 - A1 + 1) * (B2 - A2 + 1)
+						end
+						A1, B1, A2, B2 = math.huge, -math.huge, math.huge, -math.huge
+						for I = 1, N - 1 do
+							local S = Sl[Ls[I]]
+							A1, B1 = math.min(A1, S[1]), math.max(B1, S[2])
+							A2, B2 = math.min(A2, S[3]), math.max(B2, S[4])
+							local Tot = (Ls[I] - Ls[1] + 1) * (B1 - A1 + 1) * (B2 - A2 + 1) + Suf[I + 1]
+							if Tot < BestTotal then
+								BestTotal = Tot
+								Best = { Ax = Ax, At = Ls[I] }
+							end
+						end
+					end
+				end
+			end
+			if Best and Vol - BestTotal >= 0.2 * Vol and Vol - BestTotal >= 16 then return Best end
+			return nil
+		end
+
+		local function TerrainAuto()
+			NeedReady()
+			local Terr = workspace.Terrain
+			local OldText = RegionBox.Text
+			local OkR, Regs = pcall(ParseRegions, OldText)
+			if not OkR then Regs = {} end
+
+			-- области из поля в индексах кусков (включительно)
+			local Cb, Total = {}, 0
+			for _, Rg in ipairs(Regs) do
+				local B = { Rg[1] // 64, Rg[2] // 64, Rg[3] // 64, Rg[4] // 64 - 1, Rg[5] // 64 - 1, Rg[6] // 64 - 1 }
+				table.insert(Cb, B)
+				Total += (B[4] - B[1] + 1) * (B[5] - B[2] + 1) * (B[6] - B[3] + 1)
+			end
+			local function InRegs(X, Y, Z)
+				for _, B in ipairs(Cb) do
+					if X >= B[1] and X <= B[4] and Y >= B[2] and Y <= B[5] and Z >= B[3] and Z <= B[6] then return true end
+				end
+				return false
+			end
+
+			local Occ, Queue, Seen, N = {}, {}, {}, 0   -- куски с данными / очередь роста / проверенные вне областей
+			local Done, TY = 0, os.clock()
+			local function Pulse()
+				Done += 1
+				Prog.Step(Done)
+				if os.clock() - TY > 0.05 then
+					task.wait()
+					TY = os.clock()
+				end
+			end
+			-- проверить кусок вне областей; если там террейн — запомнить
+			local function Try(X, Y, Z)
+				if X < -2000 or X > 1999 or Y < -2000 or Y > 1999 or Z < -2000 or Z > 1999 then return end
+				local K = PK(X, Y, Z)
+				if Occ[K] or Seen[K] or InRegs(X, Y, Z) then return end
+				Seen[K] = true
+				if HasTerrain(X, Y, Z) then
+					Occ[K] = true
+					N += 1
+					Queue[#Queue + 1] = K
+				end
+				Pulse()
+			end
+
+			-- 1. читаем области из поля
+			Prog.Stage("Террейн: поиск, чтение областей", Total)
+			Done = 0
+			for _, B in ipairs(Cb) do
+				for X = B[1], B[4] do
+					for Y = B[2], B[5] do
+						for Z = B[3], B[6] do
+							if HasTerrain(X, Y, Z) then
+								local K = PK(X, Y, Z)
+								Occ[K] = true
+								N += 1
+								Queue[#Queue + 1] = K
+							end
+							Pulse()
+						end
+					end
+				end
+			end
+
+			-- 2. камера, то, на что она смотрит, выделенное
+			Prog.Stage("Террейн: поиск рядом с камерой и выделенным", 0)
+			Done = 0
+			local Spots = {}
+			local Cam = workspace.CurrentCamera
+			if Cam then
+				local CF = Cam.CFrame
+				table.insert(Spots, CF.Position)
+				local Pr = RaycastParams.new()
+				Pr.FilterType = Enum.RaycastFilterType.Exclude
+				Pr.FilterDescendantsInstances = Pins.Folder and { Pins.Folder } or {}
+				local OkRay, Res = pcall(function() return workspace:Raycast(CF.Position, CF.LookVector * 20000, Pr) end)
+				if OkRay and Res and Res.Instance == Terr then table.insert(Spots, Res.Position) end
+			end
+			for _, S in ipairs(Selection:Get()) do
+				if S:IsA("BasePart") then
+					table.insert(Spots, S.Position)
+				elseif S:IsA("Model") then
+					table.insert(Spots, S:GetPivot().Position)
+				end
+			end
+			for _, P in ipairs(Spots) do
+				local PX, PY, PZ = math.floor(P.X / 64), math.floor(P.Y / 64), math.floor(P.Z / 64)
+				for DX = -2, 2 do
+					for DY = -2, 2 do
+						for DZ = -2, 2 do Try(PX + DX, PY + DY, PZ + DZ) end
+					end
+				end
+			end
+
+			-- 3. рост: идём по соседям найденных кусков, пока террейн не кончится
+			Prog.Stage("Террейн: поиск, рост за пределы областей", 0)
+			Done = 0
+			local Head = 1
+			while Head <= #Queue do
+				local X, Y, Z = UnPK(Queue[Head])
+				Head += 1
+				for DX = -1, 1 do
+					for DY = -1, 1 do
+						for DZ = -1, 1 do
+							if DX ~= 0 or DY ~= 0 or DZ ~= 0 then Try(X + DX, Y + DY, Z + DZ) end
+						end
+					end
+				end
+				Pulse()
+				if Head % 50 == 0 then Prog.label = "Террейн: поиск, найдено кусков с данными: " .. N end
+			end
+			if N == 0 then
+				error("Террейн не найден. Задайте грубую область вокруг него, либо подлетите камерой и посмотрите на террейн (или выделите деталь рядом) и повторите.", 0)
+			end
+
+			-- 4. связные острова
+			Prog.Stage("Террейн: разбиение на области", 0)
+			Done = 0
+			local Mark, Groups = {}, {}
+			for K in pairs(Occ) do
+				if not Mark[K] then
+					Mark[K] = true
+					local L, I = { K }, 1
+					while I <= #L do
+						local X, Y, Z = UnPK(L[I])
+						I += 1
+						for DX = -1, 1 do
+							for DY = -1, 1 do
+								for DZ = -1, 1 do
+									local NK = PK(X + DX, Y + DY, Z + DZ)
+									if Occ[NK] and not Mark[NK] then
+										Mark[NK] = true
+										L[#L + 1] = NK
+									end
+								end
+							end
+						end
+						Pulse()
+					end
+					table.insert(Groups, { list = L, box = BoxOf(L) })
+				end
+			end
+
+			-- 5. острова с пересекающимися коробками объединяем
+			local Merged = true
+			while Merged do
+				Merged = false
+				for I = 1, #Groups do
+					for J = I + 1, #Groups do
+						if Meet(Groups[I].box, Groups[J].box) then
+							local GI, GJ = Groups[I], Groups[J]
+							table.move(GJ.list, 1, #GJ.list, #GI.list + 1, GI.list)
+							GI.box = Union(GI.box, GJ.box)
+							table.remove(Groups, J)
+							Merged = true
+							break
+						end
+					end
+					if Merged then break end
+					Pulse()
+				end
+			end
+
+			-- 6. режем каждую группу плоскостью там, где это экономит объём (максимум 32 области)
+			local MaxRegs = 32
+			local Work, Final = Groups, {}
+			while #Work > 0 do
+				local G = table.remove(Work)
+				local Cut = (#Final + #Work + 1 < MaxRegs) and BestCut(G) or nil
+				if Cut then
+					local L1, L2 = {}, {}
+					for _, K in ipairs(G.list) do
+						local V = select(Cut.Ax, UnPK(K))
+						if V <= Cut.At then L1[#L1 + 1] = K else L2[#L2 + 1] = K end
+					end
+					Work[#Work + 1] = { list = L1, box = BoxOf(L1) }
+					Work[#Work + 1] = { list = L2, box = BoxOf(L2) }
+				else
+					Final[#Final + 1] = G
+				end
+				Pulse()
+			end
+
+			-- 7. в студы (без запаса: граница проверяется точно), сортировка
+			local Items, Vol = {}, 0
+			for _, G in ipairs(Final) do
+				local B = G.box
+				local V = (B[4] - B[1] + 1) * (B[5] - B[2] + 1) * (B[6] - B[3] + 1)
+				Vol += V
+				table.insert(Items, { r = { B[1] * 64, B[2] * 64, B[3] * 64, (B[4] + 1) * 64, (B[5] + 1) * 64, (B[6] + 1) * 64 },
+					n = #G.list, v = V })
+			end
+			table.sort(Items, function(A, B)
+				if A.r[1] ~= B.r[1] then return A.r[1] < B.r[1] end
+				if A.r[2] ~= B.r[2] then return A.r[2] < B.r[2] end
+				return A.r[3] < B.r[3]
+			end)
+			local Out = {}
+			for I, It in ipairs(Items) do Out[I] = It.r end
+			local NewText = RegionsText(Out)
+			local OkP, ErrP = pcall(ParseRegions, NewText)
+			if not OkP then error("Автопоиск дал некорректные области: " .. tostring(ErrP), 0) end
+
+			local Lines = {}
+			for I, It in ipairs(Items) do
+				table.insert(Lines, string.format("  Область №%d: кусков с данными %d из %d (%d%%)", I, It.n, It.v, math.floor(It.n / It.v * 100)))
+			end
+			if string.find(OldText, "%d") then
+				table.insert(Lines, "  Прежние области (скопируйте, если нужны):")
+				for L in string.gmatch(OldText, "[^\r\n]+") do table.insert(Lines, "  " .. L) end
+			end
+			RegionBox.Text = NewText
+			RegionsChanged()
+			SetInfo(string.format("Найдено: областей %d, кусков с данными %d (всего в областях %d кусков). Проверьте рамки и нажмите «Studio → файл».",
+				#Out, N, Vol), Green)
+			ShowLines(Lines)
+		end
 
 		-- ---------- карточка ----------
 		local TC = Card(Root, 6)
 		TC.Visible = false
 		Text(TC, 1, "Террейн", { Bold = true, Size = 15 })
-		Text(TC, 2, "Отдельно от обычного Pull/Push. Область в студах «x0,y0,z0  x1,y1,z1», округляется до 64. Файл задаётся в «Настройки плейса → Файл террейна».",
+		Text(TC, 2, "Отдельно от обычного Pull/Push. Области в студах «x0,y0,z0  x1,y1,z1», по одной на строке, округляются до 64, пересекаться не могут. Файл задаётся в «Настройки плейса → Файл террейна».",
 			{ Color = C.Dim, Size = 12 })
-		RegionBox = Box(TC, 3, 28, false)
-		RegionBox.PlaceholderText = "x0,y0,z0  x1,y1,z1"
+		RegionBox = Box(TC, 3, 64, true)
+		RegionBox.PlaceholderText = "x0,y0,z0  x1,y1,z1\n(следующая область — с новой строки)"
 		RegionBox.Text = plugin:GetSetting(TKey) or "-512,-256,-512  512,256,512"
-		RegionBox.FocusLost:Connect(function() plugin:SetSetting(TKey, RegionBox.Text) end)
-		local TSel = Button(TC, 4, "Область из выделенной детали/модели", "link")
-		local VizBtn = Button(TC, 5, "👁 Показать область", "link")
-
-		local VizOn = false
-		local function RedrawViz()
-			if not VizOn then return end
-			local Mn, Mx = VizRegion(RegionBox.Text)
-			if not Mn then RegionViz.Clear() return end
-			RegionViz.Show(Mn, Mx)
-		end
+		local TFind = Button(TC, 4, "🔍 Найти области автоматически", "normal")
+		local TSel = Button(TC, 5, "Область из выделенного (заменить)", "link")
+		local TAdd = Button(TC, 6, "＋ Добавить область из выделенного", "link")
+		local PinBtn = Button(TC, 7, "✋ Двигать области мышью", "link")
+		local VizBtn = Button(TC, 8, "👁 Показать области", "link")
 
 		Click(VizBtn, function()
 			VizOn = not VizOn
-			VizBtn.Text = VizOn and "👁 Скрыть область" or "👁 Показать область"
+			VizBtn.Text = VizOn and "👁 Скрыть области" or "👁 Показать области"
 			if VizOn then RedrawViz() else RegionViz.Clear() end
 		end)
-		RegionBox.FocusLost:Connect(RedrawViz)
 
-		local TRow = make("Frame", { LayoutOrder = 6, Size = UDim2.new(1, 0, 0, 52), BackgroundTransparency = 1 }, TC)
+		Click(PinBtn, function()
+			PinOn = not PinOn
+			PinBtn.Text = PinOn and "✋ Готово (убрать маркеры)" or "✋ Двигать области мышью"
+			if PinOn then
+				local Rgns = VizRegions(RegionBox.Text)
+				if #Rgns == 0 then
+					PinOn = false
+					PinBtn.Text = "✋ Двигать области мышью"
+					SetInfo("Нет областей: задайте их цифрами, из выделенного или кнопкой автопоиска.", Yellow)
+					return
+				end
+				VizOn = true
+				VizBtn.Text = "👁 Скрыть области"
+				Pins.Show(Rgns)
+				RedrawViz()
+				SetInfo("У каждой области свой цвет. Кубы — углы, шарики — грани (меняют размер), большой шар в центре двигает область целиком. "
+					.. "Тяните инструментом Move; рамка и цифры прилипают к сетке 64. Пересечения подсвечиваются красным. "
+					.. "Маркеры лежат в Workspace/RobloxBridge_Pins: если маркер внутри террейна, выберите его там.", Blue)
+			else
+				Pins.Clear()
+			end
+		end)
+
+		RegionBox.FocusLost:Connect(RegionsChanged)
+
+		local TRow = make("Frame", { LayoutOrder = 9, Size = UDim2.new(1, 0, 0, 52), BackgroundTransparency = 1 }, TC)
 		List(TRow, 6, Enum.FillDirection.Horizontal)
 		local TPull = Button(TRow, 1, "", "pull", UDim2.new(0.5, -3, 1, 0))
 		local TPush = Button(TRow, 2, "", "push", UDim2.new(0.5, -3, 1, 0))
 		TPull.RichText, TPush.RichText = true, true
 		TPull.Text = '<b>Studio → файл</b>\n<font size="11">Террейн · сохранить</font>'
 		TPush.Text = '<b>Файл → Studio</b>\n<font size="11">Террейн · предпросмотр</font>'
-		local TApply = Button(TC, 7, "✔ Применить террейн", "primary")
-		local TUndoBtn = Button(TC, 8, "↩ Отменить террейн", "normal")
+		local TApply = Button(TC, 10, "✔ Применить террейн", "primary")
+		local TUndoBtn = Button(TC, 11, "↩ Отменить террейн", "normal")
 
 		local function TerrainButtons()
+			Enable(TFind, not Working)
 			Enable(TSel, not Working)
+			Enable(TAdd, not Working)
+			Enable(PinBtn, not Working)
 			Enable(TPull, not Working)
 			Enable(TPush, not Working)
 			TApply.Visible = TPendingN ~= nil
@@ -2665,32 +3319,49 @@ do
 			Push = function() Run("Террейн: Push", TerrainPreview) end,
 			Apply = function() Run("Террейн: применяю", TerrainApply) end,
 			Undo = function() Run("Террейн: отмена", TerrainUndoRun) end,
+			Auto = function() Run("Террейн: поиск областей", TerrainAuto) end,
 		}
 		State.TS = {
 			Apply = function() return TPendingN ~= nil end,
 			Undo = function() return TJournal ~= nil end,
 		}
+		Click(TFind, State.T.Auto)
 		Click(TPull, State.T.Pull)
 		Click(TPush, State.T.Push)
 		Click(TApply, State.T.Apply)
 		Click(TUndoBtn, State.T.Undo)
 
-		Click(TSel, function()
+		-- область вокруг выделенной детали/модели; nil, если ничего подходящего не выделено
+		local function SelRegion()
 			local S = Selection:Get()[1]
 			local CF, Sz
 			if S and S:IsA("BasePart") then CF, Sz = S.CFrame, S.Size
 			elseif S and S:IsA("Model") then CF, Sz = S:GetBoundingBox()
-			else SetInfo("Выделите деталь или модель вокруг террейна", Yellow); return end
+			else SetInfo("Выделите деталь или модель вокруг террейна", Yellow); return nil end
 			local H = Sz / 2
 			local function Ext(A)
 				return math.abs(CF.RightVector[A]) * H.X + math.abs(CF.UpVector[A]) * H.Y + math.abs(CF.LookVector[A]) * H.Z
 			end
 			local P, EX, EY, EZ = CF.Position, Ext("X"), Ext("Y"), Ext("Z")
-			RegionBox.Text = string.format("%d,%d,%d  %d,%d,%d", math.floor(P.X - EX), math.floor(P.Y - EY), math.floor(P.Z - EZ),
-				math.ceil(P.X + EX), math.ceil(P.Y + EY), math.ceil(P.Z + EZ))
-			plugin:SetSetting(TKey, RegionBox.Text)
-			SetInfo("Область взята из «" .. S.Name .. "», при Pull округлится наружу до 64 студов.", Blue)
-			RedrawViz()
+			return string.format("%d,%d,%d  %d,%d,%d", math.floor(P.X - EX), math.floor(P.Y - EY), math.floor(P.Z - EZ),
+				math.ceil(P.X + EX), math.ceil(P.Y + EY), math.ceil(P.Z + EZ)), S.Name
+		end
+
+		Click(TSel, function()
+			local Line, Name = SelRegion()
+			if not Line then return end
+			RegionBox.Text = Line
+			RegionsChanged()
+			SetInfo("Область взята из «" .. Name .. "». При Pull она округлится наружу до 64 студов.", Blue)
+		end)
+
+		Click(TAdd, function()
+			local Line, Name = SelRegion()
+			if not Line then return end
+			local Old = string.match(RegionBox.Text, "^%s*(.-)%s*$")
+			RegionBox.Text = Old == "" and Line or (Old .. "\n" .. Line)
+			RegionsChanged()
+			SetInfo("Добавлена область из «" .. Name .. "». При Pull она округлится наружу до 64 студов.", Blue)
 		end)
 
 		task.spawn(function()
